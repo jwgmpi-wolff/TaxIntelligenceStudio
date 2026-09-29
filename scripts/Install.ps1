@@ -14,16 +14,26 @@
 
     The installer acquires the application in the first way that succeeds:
 
-      1. A prebuilt release asset for this machine's architecture, if one has
+      1. The local copy of the repository this script is running from (a clone
+         or an extracted ZIP download). No download and no credential needed.
+      2. A prebuilt release asset for this machine's architecture, if one has
          been published. Nothing is compiled in this path.
-      2. The repository source archive, which is then published locally into a
-         self-contained build. If the .NET 9 SDK is missing, a private copy is
-         installed under %LOCALAPPDATA% for the current user only. No
-         administrator rights and no machine-wide change are required.
+      3. The repository source archive, which is then published locally into a
+         self-contained build.
 
-    The repository is private, so a GitHub credential is required. The
-    installer uses the first credential it finds: -Token, $env:GITHUB_TOKEN,
-    or the token from an authenticated GitHub CLI (`gh auth login`).
+    Whenever a build is needed and the .NET 9 SDK is missing, a private copy is
+    installed under %LOCALAPPDATA% for the current user only. No administrator
+    rights and no machine-wide change are required.
+
+    Platform differences are detected at run time and adjusted for: native CPU
+    architecture (x64, x86, Arm64, including x64 emulation on Arm64), Windows
+    PowerShell 5.1 or PowerShell 7, the Windows long-path setting, the system
+    drive, and whether the session is elevated.
+
+    Downloading from GitHub requires a credential because the repository is
+    private. The installer uses the first credential it finds: -Token,
+    $env:GITHUB_TOKEN, or the token from an authenticated GitHub CLI
+    (`gh auth login`).
 
 .PARAMETER Token
     GitHub personal access token with read access to the repository. Falls back
@@ -52,6 +62,11 @@
 
 .PARAMETER FromSource
     Always build from source, even when a prebuilt release asset is available.
+
+.PARAMETER FromGitHub
+    Download from GitHub even when this script is running inside a local copy
+    of the repository. By default a local copy is built directly, with no
+    download and no GitHub credential.
 
 .PARAMETER NoShortcut
     Skip creating the Start Menu shortcut.
@@ -90,6 +105,7 @@ param(
     [string]$ResultsPath,
 
     [switch]$FromSource,
+    [switch]$FromGitHub,
     [switch]$NoShortcut,
     [switch]$DesktopShortcut,
     [switch]$Launch,
@@ -120,7 +136,18 @@ $CollectorContainer = if ($ResultsPath) {
     [System.Environment]::ExpandEnvironmentVariables($ResultsPath)
 }
 else {
-    'C:\temp\TaxIntelligenceStudio'
+    $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+    Join-Path $systemDrive 'temp\TaxIntelligenceStudio'
+}
+
+# A clone or an extracted ZIP of the repository contains this script under
+# scripts\, so the source is right next to it and nothing has to be downloaded.
+$LocalSourceRoot = $null
+if (-not $FromGitHub -and $PSScriptRoot) {
+    $candidate = Split-Path -Parent $PSScriptRoot
+    if (Test-Path -LiteralPath (Join-Path $candidate 'src\TaxIntelligenceStudio.Desktop\TaxIntelligenceStudio.Desktop.csproj')) {
+        $LocalSourceRoot = $candidate
+    }
 }
 
 function Write-Step {
@@ -183,8 +210,17 @@ function Resolve-GitHubToken {
 
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     if ($gh) {
-        $ghToken = (& $gh.Path auth token 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($ghToken)) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $ghOutput = @(& $gh.Path auth token 2>$null)
+            $ghExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+        $ghToken = if ($ghOutput.Count -gt 0) { [string]$ghOutput[0] } else { $null }
+        if ($ghExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($ghToken)) {
             return @{ Token = $ghToken.Trim(); Source = 'GitHub CLI (gh auth token)' }
         }
     }
@@ -271,9 +307,16 @@ function Test-DotnetSatisfiesSource {
     )
 
     Push-Location -LiteralPath $WorkingDirectory
+    # Windows PowerShell 5.1 can turn native stderr into terminating errors
+    # under 'Stop', and stopping the pipeline early (Select-Object -First) can
+    # kill the process and leave a non-zero exit code. Capture all output first.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        $version = (& $DotnetPath --version 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+        $output = @(& $DotnetPath --version 2>$null)
+        $exitCode = $LASTEXITCODE
+        $version = if ($output.Count -gt 0) { [string]$output[0] } else { $null }
+        if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
             return $null
         }
 
@@ -288,6 +331,7 @@ function Test-DotnetSatisfiesSource {
         return $null
     }
     finally {
+        $ErrorActionPreference = $previousPreference
         Pop-Location
     }
 }
@@ -324,7 +368,14 @@ function Resolve-DotnetSdk {
     $ProgressPreference = 'SilentlyContinue'
     try {
         Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installerPath -UseBasicParsing
-        & $installerPath -Channel $RequiredSdkChannel -InstallDir $privateRoot -NoPath
+        # Request the native architecture explicitly; the installer would
+        # otherwise pick x64 when this shell runs under emulation on Arm64.
+        $sdkArchitecture = switch (Get-NativeArchitecture) {
+            'Arm64' { 'arm64' }
+            'X86' { 'x86' }
+            default { 'x64' }
+        }
+        & $installerPath -Channel $RequiredSdkChannel -InstallDir $privateRoot -Architecture $sdkArchitecture -NoPath
     }
     finally {
         $ProgressPreference = $previousProgress
@@ -383,37 +434,77 @@ function Expand-SourceArchive {
     return $SourcePath
 }
 
-function Assert-PathLengthSupported {
+function Test-LongPathsEnabled {
+    try {
+        $value = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+                -Name LongPathsEnabled -ErrorAction Stop).LongPathsEnabled
+        return $value -eq 1
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-BuildPathFits {
     param([Parameter(Mandatory)][string]$SourceRoot)
 
     # Longest path the build is expected to create inside the source tree.
     $probe = Join-Path $SourceRoot 'src\TaxIntelligenceStudio.Infrastructure\obj\Release\net9.0\win-arm64\TaxIntelligenceStudio.Infrastructure.dll'
-    if ($probe.Length -le 250) {
-        return
+    return $probe.Length -le 250
+}
+
+# Picks a writable working directory whose build paths fit this system. When
+# Windows long paths are disabled and the preferred location is too deep, a
+# shorter location is used automatically instead of failing.
+function Resolve-WorkRoot {
+    param([Parameter(Mandatory)][string]$Preferred)
+
+    $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 6)
+    $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { 'C:' }
+    $candidates = @(
+        $Preferred,
+        (Join-Path $systemDrive "tis-$suffix"),
+        (Join-Path ([System.IO.Path]::GetTempPath()) "tis-$suffix")
+    )
+
+    $longPaths = Test-LongPathsEnabled
+    foreach ($candidate in $candidates) {
+        if (-not $longPaths -and -not (Test-BuildPathFits -SourceRoot (Join-Path $candidate 's'))) {
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $candidate) {
+                Remove-Item -LiteralPath $candidate -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
+            if ($candidate -ne $Preferred) {
+                Write-Note "Using the shorter build folder $candidate because Windows long paths are disabled on this computer."
+            }
+            return $candidate
+        }
+        catch {
+            continue
+        }
     }
 
-    $longPathsEnabled = 0
-    try {
-        $longPathsEnabled = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
-                -Name LongPathsEnabled -ErrorAction SilentlyContinue).LongPathsEnabled
+    throw "No writable build folder with a short enough path was found. Re-run with -WorkPath pointing to a short folder such as $systemDrive\tis."
+}
+
+function Copy-LocalSource {
+    param(
+        [Parameter(Mandatory)][string]$From,
+        [Parameter(Mandatory)][string]$To
+    )
+
+    # robocopy ships with every supported Windows version and skips build
+    # output and Git metadata, which keeps the copy small and its paths short.
+    $null = & robocopy.exe $From $To /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 /XD bin obj .git .vs TestResults
+    if ($LASTEXITCODE -ge 8) {
+        throw "Copying the local source from '$From' failed (robocopy exit code $LASTEXITCODE)."
     }
-    catch {
-        $longPathsEnabled = 0
-    }
-
-    if ($longPathsEnabled -eq 1) {
-        return
-    }
-
-    throw @"
-The temporary build path is too long for this system ($($probe.Length) characters; Windows allows 260).
-
-Re-run with a shorter working directory, for example:
-  -WorkPath C:\tis
-
-Or enable long path support (administrator, one time):
-  Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Value 1
-"@
+    $global:LASTEXITCODE = 0
+    return $To
 }
 
 function New-AppShortcut {
@@ -443,13 +534,36 @@ function New-AppShortcut {
 
 function Assert-AppNotRunning {
     $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) {
+        return
+    }
+
+    # Ask a running copy to close normally so its files can be replaced.
+    Write-Note "$AppName is running; asking it to close."
+    foreach ($process in $running) {
+        try { [void]$process.CloseMainWindow() } catch { }
+    }
+    foreach ($process in $running) {
+        try { [void]$process.WaitForExit(15000) } catch { }
+    }
+
+    $running = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue)
     if ($running.Count -gt 0) {
         $ids = ($running | ForEach-Object { $_.Id }) -join ', '
-        throw "$AppName is currently running (PID $ids). Close it and re-run this script."
+        throw "$AppName is still running (PID $ids). Close it and run this again."
     }
 }
 
 # --- Paths ------------------------------------------------------------------
+
+$IsElevated = $false
+try {
+    $IsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+catch {
+    $IsElevated = $false
+}
 
 if (-not $InstallPath) {
     $InstallPath = Join-Path $env:LOCALAPPDATA 'Programs\TaxIntelligenceStudio'
@@ -577,37 +691,43 @@ if (-not $Runtime) {
 }
 
 Write-Detail "Computer: $env:COMPUTERNAME"
-Write-Detail "User: $env:USERDOMAIN\$env:USERNAME"
+Write-Detail "User: $env:USERDOMAIN\$env:USERNAME$(if ($IsElevated) { ' (administrator)' })"
 Write-Detail "Windows: $osVersion ($(Get-NativeArchitecture))"
+Write-Detail "PowerShell: $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
 Write-Detail "Runtime: $Runtime"
 Write-Detail "Install path: $InstallPath"
 
 Assert-AppNotRunning
 
-$credential = Resolve-GitHubToken -Explicit $Token
-$githubToken = $credential.Token
-Write-Detail "GitHub credential: $($credential.Source)"
+$githubToken = $null
+if ($LocalSourceRoot) {
+    Write-Detail "Source: local copy at $LocalSourceRoot (no download or GitHub credential needed)"
+}
+else {
+    $credential = Resolve-GitHubToken -Explicit $Token
+    $githubToken = $credential.Token
+    Write-Detail "GitHub credential: $($credential.Source)"
+}
 
 # Build paths are kept deliberately short. Windows enforces a 260 character
 # path limit by default, and MSBuild intermediate paths overflow it easily.
 if ($WorkPath) {
     $workRoot = [System.Environment]::ExpandEnvironmentVariables($WorkPath)
+    if (Test-Path -LiteralPath $workRoot) {
+        Remove-Item -LiteralPath $workRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 }
 else {
     # Inside the collector container so build artifacts and results live
-    # together, and short because MSBuild paths overflow MAX_PATH easily.
-    $workRoot = Join-Path $CollectorContainer ('build-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+    # together, unless this system needs a shorter path.
+    $workRoot = Resolve-WorkRoot -Preferred (Join-Path $CollectorContainer ('build-' + [Guid]::NewGuid().ToString('N').Substring(0, 6)))
 }
-
-if (Test-Path -LiteralPath $workRoot) {
-    Remove-Item -LiteralPath $workRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
 
 try {
     $payloadPath = $null
 
-    if (-not $FromSource) {
+    if (-not $LocalSourceRoot -and -not $FromSource) {
         Write-Step 'Checking for a prebuilt release'
         $asset = Get-LatestReleaseAsset -Token $githubToken -Runtime $Runtime
 
@@ -627,24 +747,28 @@ try {
     }
 
     if (-not $payloadPath) {
-        Write-Step "Downloading source archive ($Reference)"
-        $sourceZip = Join-Path $workRoot 's.zip'
-        Invoke-GitHubDownload -Uri "https://api.github.com/repos/$Owner/$Repo/zipball/$Reference" `
-            -OutFile $sourceZip -Token $githubToken
+        if ($LocalSourceRoot) {
+            Write-Step 'Preparing the local source'
+            $repoRoot = Copy-LocalSource -From $LocalSourceRoot -To (Join-Path $workRoot 's')
+        }
+        else {
+            Write-Step "Downloading source archive ($Reference)"
+            $sourceZip = Join-Path $workRoot 's.zip'
+            Invoke-GitHubDownload -Uri "https://api.github.com/repos/$Owner/$Repo/zipball/$Reference" `
+                -OutFile $sourceZip -Token $githubToken
 
-        $repoRoot = Expand-SourceArchive -ZipPath $sourceZip `
-            -StagingPath (Join-Path $workRoot 'z') `
-            -SourcePath (Join-Path $workRoot 's')
+            $repoRoot = Expand-SourceArchive -ZipPath $sourceZip `
+                -StagingPath (Join-Path $workRoot 'z') `
+                -SourcePath (Join-Path $workRoot 's')
+        }
 
         $projectFile = Get-ChildItem -LiteralPath $repoRoot -Recurse -Filter 'TaxIntelligenceStudio.Desktop.csproj' |
             Select-Object -First 1
         if (-not $projectFile) {
-            throw "The downloaded archive did not contain 'TaxIntelligenceStudio.Desktop.csproj'."
+            throw "The source at '$repoRoot' does not contain 'TaxIntelligenceStudio.Desktop.csproj'."
         }
 
-        Write-Detail "Source extracted to $repoRoot"
-        Assert-PathLengthSupported -SourceRoot $repoRoot
-
+        Write-Detail "Source prepared at $repoRoot"
         $sdk = Resolve-DotnetSdk -SourceRoot $repoRoot
         Write-Detail ".NET SDK: $($sdk.Version) ($($sdk.Path))"
 
@@ -667,11 +791,14 @@ try {
         # The SDK version is selected from global.json relative to the current
         # working directory, so the build must run inside the source tree.
         Push-Location -LiteralPath $repoRoot
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         try {
             $buildOutput = & $sdk.Path @publishArgs 2>&1
             $buildExitCode = $LASTEXITCODE
         }
         finally {
+            $ErrorActionPreference = $previousPreference
             Pop-Location
         }
 
@@ -731,7 +858,7 @@ Write-Host ''
 Write-Host "$AppName installed." -ForegroundColor Green
 Write-Host "  Launch: $InstalledExe"
 Write-Host "  Data:   $DataPath"
-Write-Host '  Remove: run this script again with -Uninstall'
+Write-Host '  Remove: double-click Uninstall.cmd, or run this script with -Uninstall'
 
 if ($Launch) {
     Write-Step 'Starting application'

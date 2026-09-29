@@ -1,24 +1,27 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Builds Tax Intelligence Studio and deploys it to a remote Windows machine.
+    Builds Tax Intelligence Studio and deploys it to this or another Windows machine.
 
 .DESCRIPTION
     Publishes the WPF desktop application as a self-contained Windows build on
     this machine, then installs it on the destination computer over PowerShell
     Remoting (WinRM).
 
-    The destination is assumed to be remote. The destination does not need the
-    .NET SDK, the .NET runtime, the source tree, or any build tooling: a
+    The destination defaults to this computer, detected from its name. Pass
+    -ComputerName to deploy to another machine; that destination does not need
+    the .NET SDK, the .NET runtime, the source tree, or any build tooling: a
     self-contained payload is copied over the remoting session.
 
-    Use -Local only when the destination is deliberately this same machine.
+    -Local forces a local deployment explicitly.
 
     The repository root is resolved from this script's own location, so the
     script can be invoked from any working directory.
 
 .PARAMETER ComputerName
-    Destination Windows computer. Required unless -Local is specified.
+    Destination Windows computer. Defaults to this computer's name
+    ($env:COMPUTERNAME). When it is omitted or names this machine (including
+    localhost or '.'), the deployment runs locally without PowerShell Remoting.
 
 .PARAMETER Credential
     Credential used to connect to the destination. Prompted for when omitted
@@ -74,6 +77,14 @@
     C:\temp\TaxIntelligenceStudio.
 
 .EXAMPLE
+    .\scripts\Deploy-Windows.ps1
+
+    Deploys to this computer, detected automatically.
+
+.EXAMPLE
+    .\scripts\Deploy-Windows.ps1 -Uninstall
+
+.EXAMPLE
     .\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01
 
 .EXAMPLE
@@ -87,7 +98,7 @@
 #>
 [CmdletBinding(DefaultParameterSetName = 'Remote')]
 param(
-    [Parameter(Mandatory, ParameterSetName = 'Remote', Position = 0)]
+    [Parameter(ParameterSetName = 'Remote', Position = 0)]
     [string]$ComputerName,
 
     [Parameter(ParameterSetName = 'Remote')]
@@ -179,7 +190,24 @@ function Invoke-OnDestination {
     return & $ScriptBlock @ArgumentList
 }
 
-$isRemote = $PSCmdlet.ParameterSetName -eq 'Remote'
+function Test-IsThisComputer {
+    param([string]$Name)
+
+    $candidate = $Name.Trim().ToLowerInvariant()
+    if ($candidate -in @('.', 'localhost', '127.0.0.1', '::1')) {
+        return $true
+    }
+
+    $thisComputer = $env:COMPUTERNAME.ToLowerInvariant()
+    return $candidate -eq $thisComputer -or $candidate.Split('.')[0] -eq $thisComputer
+}
+
+# With no -ComputerName, or with a name that refers to this machine, deploy
+# locally so no machine name has to be edited in and WinRM is not needed.
+if ($PSCmdlet.ParameterSetName -eq 'Remote' -and [string]::IsNullOrWhiteSpace($ComputerName)) {
+    $ComputerName = $env:COMPUTERNAME
+}
+$isRemote = $PSCmdlet.ParameterSetName -eq 'Remote' -and -not (Test-IsThisComputer $ComputerName)
 $destinationLabel = if ($isRemote) { $ComputerName } else { "$env:COMPUTERNAME (local)" }
 $script:Session = $null
 
@@ -358,16 +386,33 @@ $InitializeDestinationCollector = {
 
     try {
         New-Item -ItemType Directory -Path $Container -Force | Out-Null
-        [Environment]::SetEnvironmentVariable('TAXINTELLIGENCESTUDIO_RESULTS', $Container, 'Machine')
-        return [pscustomobject]@{ Container = $Container; Ready = $true; Error = $null }
     }
     catch {
-        try {
-            [Environment]::SetEnvironmentVariable('TAXINTELLIGENCESTUDIO_RESULTS', $Container, 'User')
-        }
-        catch { }
         return [pscustomobject]@{ Container = $Container; Ready = $false; Error = $_.Exception.Message }
     }
+
+    # Machine scope needs an elevated session; otherwise use the user scope,
+    # which the application reads just the same.
+    $isElevated = $false
+    try {
+        $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch { }
+
+    $scopes = if ($isElevated) { @('Machine', 'User') } else { @('User') }
+    $lastError = $null
+    foreach ($scope in $scopes) {
+        try {
+            [Environment]::SetEnvironmentVariable('TAXINTELLIGENCESTUDIO_RESULTS', $Container, $scope)
+            return [pscustomobject]@{ Container = $Container; Ready = $true; Error = $null }
+        }
+        catch {
+            $lastError = $_.Exception.Message
+        }
+    }
+
+    return [pscustomobject]@{ Container = $Container; Ready = $false; Error = $lastError }
 }
 
 function Write-CollectedResult {
@@ -622,7 +667,7 @@ try {
             Write-Host "  Remove: .\scripts\Deploy-Windows.ps1 -ComputerName $ComputerName -Uninstall"
         }
         else {
-            Write-Host '  Remove: .\scripts\Deploy-Windows.ps1 -Local -Uninstall'
+            Write-Host '  Remove: .\scripts\Deploy-Windows.ps1 -Uninstall'
         }
 
         if ($isRemote) {

@@ -170,16 +170,46 @@ dotnet run --project src\TaxIntelligenceStudio.Service
 
 ## Install on a Windows machine
 
-`scripts\Install.ps1` installs the application on a machine that has **nothing
+### Quick start: double-click
+
+1. Get a copy of this repository: clone it, or on GitHub choose
+   **Code > Download ZIP** and extract it.
+2. Double-click **`Install.cmd`** in the top folder.
+
+That's all. There is nothing to edit, type, or install first. The installer
+builds the app from that copy, installs it for the current user, adds Start
+Menu and Desktop shortcuts, and starts it. No GitHub token and no
+administrator rights are needed.
+
+To remove it, double-click **`Uninstall.cmd`**. Your data in
+`%LOCALAPPDATA%\TaxIntelligenceStudio` is kept.
+
+If Windows shows a SmartScreen prompt for a downloaded ZIP, choose
+**More info > Run anyway**.
+
+The installer detects these differences between machines when it runs and
+adjusts for them, so the same files work everywhere:
+
+| Detected | Adjustment |
+| --- | --- |
+| CPU architecture (x64, x86, Arm64), including x64 emulation on Arm64 | Builds for, and installs an SDK matching, the native architecture |
+| No suitable .NET 9 SDK | Installs a private per-user SDK; nothing machine-wide changes |
+| Windows PowerShell 5.1 or PowerShell 7 | Handles each shell's differences in native-command error handling |
+| Windows long paths disabled | Moves the build to a shorter folder automatically |
+| Not running as administrator | Uses per-user settings only |
+| System drive other than `C:` | Places the results folder on the system drive |
+| App already running | Asks it to close before replacing its files |
+
+### Install without a copy of the repository
+
+`scripts\Install.ps1` can also install on a machine that has **nothing
 set up in advance** — no clone of this repository, no Git, no .NET SDK or
 runtime, and no build tooling. The script downloads everything it needs,
 installs to a per-user location, and creates shortcuts. Administrator rights
 are not required.
 
-Because this repository is **private**, the installer must authenticate to
-GitHub. See [Credentials](#credentials) below.
-
-### Install
+Because this repository is **private**, downloading requires authenticating
+to GitHub. See [Credentials](#credentials) below.
 
 Run this on the machine you want the application installed on:
 
@@ -191,22 +221,19 @@ irm -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'applicatio
 & $env:TEMP\Install.ps1
 ```
 
-If you already have a copy of the script, simply run it:
-
-```powershell
-.\Install.ps1
-```
-
 The installer:
 
-1. Resolves a GitHub credential.
-2. Downloads a prebuilt release asset for the machine's architecture if one
-   exists. This requires no compilation.
-3. Otherwise downloads the source archive and builds it, installing a private
-   .NET 9 SDK under `%LOCALAPPDATA%\TaxIntelligenceStudio\dotnet-sdk` if the
-   machine has no suitable SDK. The private SDK is never added to `PATH` and
-   does not affect other tooling on the machine.
-4. Installs to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio` and creates a
+1. Uses the local repository copy it is running from, if there is one. No
+   download or credential is needed in that case.
+2. Otherwise resolves a GitHub credential and downloads a prebuilt release
+   asset for the machine's architecture if one exists. This requires no
+   compilation.
+3. Otherwise downloads the source archive and builds it.
+4. When building, installs a private .NET 9 SDK under
+   `%LOCALAPPDATA%\TaxIntelligenceStudio\dotnet-sdk` if the machine has no
+   suitable SDK. The private SDK is never added to `PATH` and does not affect
+   other tooling on the machine.
+5. Installs to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio` and creates a
    Start Menu shortcut.
 
 The target architecture (`win-x64` or `win-arm64`) is detected automatically.
@@ -224,8 +251,10 @@ repository's contents** is sufficient.
 
 ### Uninstall
 
+Double-click `Uninstall.cmd`, or run:
+
 ```powershell
-.\Install.ps1 -Uninstall
+.\scripts\Install.ps1 -Uninstall
 ```
 
 This removes the application and its shortcuts. Local data in
@@ -242,6 +271,7 @@ This removes the application and its shortcuts. Local data in
 | `-Runtime` | `win-x64` or `win-arm64`. Detected automatically when omitted. |
 | `-Reference` | Branch, tag, or commit to install from. Defaults to `main`. |
 | `-FromSource` | Always build from source, ignoring prebuilt releases. |
+| `-FromGitHub` | Download from GitHub even when run from a local repository copy. |
 | `-DesktopShortcut` | Also create a Desktop shortcut. |
 | `-Uninstall` | Remove the application. |
 
@@ -267,8 +297,8 @@ gh workflow run release.yml -f tag=v1.0.0
 ### If the build path is too long
 
 Windows limits paths to 260 characters unless long path support is enabled.
-The installer uses short temporary paths, but a deeply nested `%TEMP%` can
-still overflow the limit. Pass a shorter working directory:
+The installer detects this and automatically moves the build to a shorter
+folder. If no short writable folder can be found, pass one explicitly:
 
 ```powershell
 .\Install.ps1 -WorkPath C:\tis
@@ -290,10 +320,11 @@ touching them directly. If the destination has no clone and you want it to
 install itself, use [`scripts\Install.ps1`](#install-on-a-windows-machine)
 instead.
 
-**The destination is assumed to be remote.** The script publishes a
-self-contained payload on the build machine and copies it to the destination,
-so the destination needs no .NET SDK, no .NET runtime, no source tree, and no
-build tooling.
+**Remote destinations use PowerShell Remoting.** When a remote computer name
+is given, the script publishes a self-contained payload on the build machine
+and copies it to the destination, so the destination needs no .NET SDK, no
+.NET runtime, no source tree, and no build tooling. With no computer name, it
+deploys to this machine.
 
 The script resolves the repository root from its own location, so it can be
 invoked from any working directory.
@@ -345,17 +376,22 @@ architecture, install path, and payload size before and after installing.
 
 ### Deploy to this machine
 
-Local deployment is an explicit opt-in:
+Run the script with no computer name. It detects this machine's name
+automatically and installs locally, so nothing needs to be edited and WinRM is
+not required:
 
 ```powershell
-.\scripts\Deploy-Windows.ps1 -Local
+.\scripts\Deploy-Windows.ps1
 ```
+
+Passing this machine's own name, `localhost`, or `.` as `-ComputerName`, or
+using `-Local`, does the same.
 
 ### Uninstall
 
 ```powershell
+.\scripts\Deploy-Windows.ps1 -Uninstall
 .\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01 -Uninstall
-.\scripts\Deploy-Windows.ps1 -Local -Uninstall
 ```
 
 Uninstall removes the installed application and its shortcuts. Local data under
