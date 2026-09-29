@@ -25,6 +25,9 @@
                      ShowClose="True" />
 
         <TabControl x:Name="AppTabs" Grid.Row="1" Margin="24,12,24,16">
+            <TabControl.LayoutTransform>
+                <ScaleTransform x:Name="AppScale" ScaleX="1" ScaleY="1" />
+            </TabControl.LayoutTransform>
             <TabItem Header="1  IRS Knowledge">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
@@ -82,7 +85,10 @@
             </TabItem>
 
             <TabItem Header="2  Financial Import">
-                <Grid Margin="20">
+                <ScrollViewer x:Name="FinancialScroll"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="FinancialLayout" Margin="20" MinHeight="520">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="150" />
@@ -143,10 +149,14 @@
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="3  1040 Analysis">
-                <Grid Margin="20">
+                <ScrollViewer x:Name="AnalysisScroll"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="AnalysisLayout" Margin="20" MinHeight="520">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="2*" />
@@ -197,6 +207,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="4  Model Trainer">

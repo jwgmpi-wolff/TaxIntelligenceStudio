@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using TaxIntelligenceStudio.Desktop.ViewModels;
 using Wpf.Ui.Controls;
 
@@ -8,20 +10,103 @@ namespace TaxIntelligenceStudio.Desktop;
 public partial class MainWindow : FluentWindow
 {
     private const double CompactLayoutWidth = 900;
+    private const double DesignHeight = 820;
+    private const double MinimumScale = 0.8;
     private bool? _isCompactLayout;
 
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
         DataContext = viewModel;
+        FitToWorkArea();
         SizeChanged += MainWindow_OnSizeChanged;
+        PreviewMouseWheel += MainWindow_OnPreviewMouseWheel;
+        FinancialScroll.SizeChanged += (_, e) => FillViewport(FinancialLayout, e.NewSize.Height);
+        AnalysisScroll.SizeChanged += (_, e) => FillViewport(AnalysisLayout, e.NewSize.Height);
         ApplyResponsiveLayout(Width < CompactLayoutWidth);
+        ApplyScale(Height);
+    }
+
+    private void FitToWorkArea()
+    {
+        var workArea = SystemParameters.WorkArea;
+        if (Width > workArea.Width)
+        {
+            Width = workArea.Width;
+        }
+
+        if (Height > workArea.Height)
+        {
+            Height = workArea.Height;
+        }
+
+        MinWidth = Math.Min(MinWidth, workArea.Width);
+        MinHeight = Math.Min(MinHeight, workArea.Height);
     }
 
     private void MainWindow_OnSizeChanged(object sender, SizeChangedEventArgs e)
     {
         ApplyResponsiveLayout(e.NewSize.Width < CompactLayoutWidth);
+        ApplyScale(e.NewSize.Height);
     }
+
+    // Shrinks all tab content proportionally on short screens so more fits before scrolling is needed.
+    private void ApplyScale(double windowHeight)
+    {
+        var scale = Math.Clamp(windowHeight / DesignHeight, MinimumScale, 1.0);
+        AppScale.ScaleX = scale;
+        AppScale.ScaleY = scale;
+    }
+
+    // Grids with star rows must be given a finite height inside a ScrollViewer; otherwise
+    // their DataGrids grow unbounded. They fill the viewport but never shrink below MinHeight.
+    private static void FillViewport(FrameworkElement layout, double viewportHeight)
+    {
+        var verticalMargin = layout.Margin.Top + layout.Margin.Bottom;
+        layout.Height = Math.Max(layout.MinHeight, viewportHeight - verticalMargin);
+    }
+
+    // DataGrids and text boxes swallow wheel events even when they cannot scroll further,
+    // which would block the tab's page-level scrolling. Forward the wheel to the nearest
+    // ancestor ScrollViewer that can still move in the requested direction.
+    private void MainWindow_OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source)
+        {
+            return;
+        }
+
+        var scrollingDown = e.Delta < 0;
+        var isInnermost = true;
+        for (var node = source; node is not null; node = GetParent(node))
+        {
+            if (node is not ScrollViewer viewer)
+            {
+                continue;
+            }
+
+            var canScroll = scrollingDown
+                ? viewer.VerticalOffset < viewer.ScrollableHeight
+                : viewer.VerticalOffset > 0;
+            if (canScroll)
+            {
+                if (!isInnermost)
+                {
+                    viewer.ScrollToVerticalOffset(viewer.VerticalOffset - e.Delta);
+                    e.Handled = true;
+                }
+
+                return;
+            }
+
+            isInnermost = false;
+        }
+    }
+
+    private static DependencyObject? GetParent(DependencyObject node) =>
+        node is Visual or System.Windows.Media.Media3D.Visual3D
+            ? VisualTreeHelper.GetParent(node)
+            : LogicalTreeHelper.GetParent(node);
 
     private void ApplyResponsiveLayout(bool useCompactLayout)
     {
