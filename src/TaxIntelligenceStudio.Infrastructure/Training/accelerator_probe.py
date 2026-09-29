@@ -4,8 +4,20 @@ from pathlib import Path
 
 
 def test_gpu():
-    import torch
-    import torch_directml
+    import platform
+
+    try:
+        import torch
+        import torch_directml
+    except ImportError as exc:
+        machine = platform.machine().lower()
+        if machine not in ("amd64", "x86_64"):
+            return False, (
+                f"This Python is {platform.machine()} and torch-directml "
+                "publishes x64 wheels only; select an x64 Python interpreter, "
+                "which runs under emulation on Windows on Arm"
+            )
+        raise
 
     if not torch_directml.is_available():
         return False, "DirectML unavailable"
@@ -98,13 +110,21 @@ def main():
 
     try:
         gpu_verified, gpu_device = test_gpu()
-        details.append("A real one-step LoRA update completed through PyTorch DirectML.")
+        details.append(
+            "A real one-step LoRA update completed through PyTorch DirectML."
+            if gpu_verified
+            else f"GPU test did not verify: {gpu_device}."
+        )
     except Exception as exc:
         details.append(f"GPU test failed: {exc}")
 
     try:
         npu_verified, npu_provider = test_npu()
-        details.append("ONNX graph executed through the Qualcomm QNN HTP provider.")
+        details.append(
+            "ONNX graph executed through the Qualcomm QNN HTP provider."
+            if npu_verified
+            else f"NPU test did not verify: {npu_provider}."
+        )
     except Exception as exc:
         details.append(f"NPU test failed: {exc}")
 

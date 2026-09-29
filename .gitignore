@@ -10,3 +10,5 @@
 artifacts/
 TestResults/
 dist/
+
+__pycache__/

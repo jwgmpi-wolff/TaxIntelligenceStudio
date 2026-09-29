@@ -13,7 +13,8 @@ public sealed record ComputeAccelerator(
     AcceleratorKind Kind,
     bool SupportsTraining,
     bool SupportsInference,
-    string Runtime);
+    string Runtime,
+    string? TrainingUnavailableReason = null);
 
 public sealed record BaseModelOption(
     string Family,

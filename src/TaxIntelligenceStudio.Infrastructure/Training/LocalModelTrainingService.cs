@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
@@ -57,11 +58,11 @@ public sealed class LocalModelTrainingService(
 
         if (selected is null)
         {
-            var npuDetected = accelerators.Any(item => item.Kind == AcceleratorKind.Npu);
-            var reason = npuDetected
-                ? "An NPU was detected, but current Windows NPU execution providers support inference rather than model-weight training. No usable CUDA or DirectML GPU was detected; enable CPU fallback explicitly if desired."
-                : "No CUDA or DirectML training GPU was detected. Enable CPU fallback explicitly if desired.";
-            throw new InvalidOperationException(reason);
+            throw new InvalidOperationException(
+                BuildNoTrainingDeviceMessage(
+                    accelerators,
+                    request.AllowCpuFallback,
+                    TrainingPlatform.CurrentArchitecture));
         }
 
         Directory.CreateDirectory(request.OutputDirectory);
@@ -165,6 +166,51 @@ public sealed class LocalModelTrainingService(
                 item.SupportsTraining && item.Kind == AcceleratorKind.Cpu)
             : null);
 
+    /// <summary>
+    /// Explains why no training device could be selected, using the reasons
+    /// reported by detection so the message is accurate for this machine.
+    /// </summary>
+    internal static string BuildNoTrainingDeviceMessage(
+        IReadOnlyCollection<ComputeAccelerator> accelerators,
+        bool allowCpuFallback,
+        Architecture architecture)
+    {
+        var blocked = accelerators
+            .Where(item => !item.SupportsTraining &&
+                           !string.IsNullOrWhiteSpace(item.TrainingUnavailableReason))
+            .Select(item => $"{item.Name}: {item.TrainingUnavailableReason}")
+            .Distinct()
+            .ToList();
+
+        var cpuAvailable = accelerators.Any(item =>
+            item.Kind == AcceleratorKind.Cpu && item.SupportsTraining);
+        var npuDetected = accelerators.Any(item => item.Kind == AcceleratorKind.Npu);
+
+        var message = npuDetected
+            ? "An NPU was detected, but current Windows NPU execution providers support " +
+              "inference rather than model-weight training. No usable CUDA or DirectML " +
+              "GPU was detected."
+            : "No CUDA or DirectML training GPU was detected.";
+
+        if (blocked.Count > 0)
+        {
+            message += $" {string.Join(" ", blocked)}";
+        }
+
+        if (cpuAvailable && !allowCpuFallback)
+        {
+            message += " CPU training is available on this machine; enable CPU fallback to use it.";
+        }
+
+        var hostGuidance = TrainingPlatform.HostGuidance(architecture);
+        if (hostGuidance is not null)
+        {
+            message += $" {hostGuidance}";
+        }
+
+        return message;
+    }
+
     private static ProcessStartInfo BuildStartInfo(
         ModelTrainingRequest request,
         string scriptPath,
@@ -247,6 +293,7 @@ public sealed class LocalModelTrainingService(
         }
 
         var failures = new List<string>();
+        var probedCandidates = new List<string>();
         foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (Path.IsPathFullyQualified(candidate) && !File.Exists(candidate))
@@ -254,6 +301,7 @@ public sealed class LocalModelTrainingService(
                 continue;
             }
 
+            probedCandidates.Add(candidate);
             var probe = await ProbePythonAsync(candidate, accelerator, cancellationToken);
             if (probe.Succeeded)
             {
@@ -264,13 +312,90 @@ public sealed class LocalModelTrainingService(
             failures.Add($"{candidate}: {probe.Message}");
         }
 
-        var directMlInstall = accelerator == AcceleratorKind.DirectMlGpu
-            ? " For DirectML, install: python -m pip install torch==2.4.1 torchvision==0.19.1 torch-directml==0.2.5.dev240914 transformers datasets accelerate peft"
-            : " Install: python -m pip install torch transformers datasets accelerate peft";
+        var host = TrainingPlatform.CurrentArchitecture;
+        var install =
+            $" Install: {TrainingPlatform.InstallCommand(accelerator == AcceleratorKind.DirectMlGpu)}";
+
+        // An Arm64-native interpreter can never resolve a PyTorch wheel. Say so
+        // explicitly, otherwise the install command above is advice that cannot
+        // succeed no matter how many times it is run.
+        var interpreterBlockers = new List<string>();
+        foreach (var candidate in probedCandidates)
+        {
+            var interpreterArchitecture =
+                await DetectInterpreterArchitectureAsync(candidate, cancellationToken);
+            if (interpreterArchitecture is null)
+            {
+                continue;
+            }
+
+            var reason = TrainingPlatform.InterpreterUnavailableReason(
+                interpreterArchitecture.Value,
+                host);
+            if (reason is not null)
+            {
+                interpreterBlockers.Add($"{candidate}: {reason}");
+            }
+        }
+
+        if (interpreterBlockers.Count > 0)
+        {
+            install = $" {string.Join(" ", interpreterBlockers.Distinct())}";
+        }
+
         throw new InvalidOperationException(
             $"No compatible local Python training environment was found. " +
-            $"{string.Join(" | ", failures)}{directMlInstall}");
+            $"{string.Join(" | ", failures)}{install}");
     }
+
+    /// <summary>
+    /// Reports the architecture of a Python interpreter, which determines which
+    /// wheels it can install. Returns null when the interpreter cannot be run.
+    /// </summary>
+    /// <remarks>
+    /// <c>platform.machine()</c> reports the architecture of the interpreter
+    /// process rather than of the machine, which is exactly what matters here:
+    /// an x64 interpreter emulated on Windows on Arm reports <c>AMD64</c> and
+    /// installs x64 wheels successfully.
+    /// </remarks>
+    internal static async Task<Architecture?> DetectInterpreterArchitectureAsync(
+        string pythonExecutable,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = pythonExecutable,
+                ArgumentList = { "-c", "import platform; print(platform.machine())" },
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            if (process is null)
+            {
+                return null;
+            }
+
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            return process.ExitCode == 0 ? ParseMachine(output) : null;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    internal static Architecture? ParseMachine(string machine) =>
+        machine.Trim().ToUpperInvariant() switch
+        {
+            "AMD64" or "X86_64" => Architecture.X64,
+            "ARM64" or "AARCH64" => Architecture.Arm64,
+            "X86" => Architecture.X86,
+            _ => null
+        };
 
     private static IEnumerable<string> FindSiblingTrainerEnvironments()
     {

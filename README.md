@@ -68,10 +68,11 @@ The solution follows a layered desktop architecture:
 - Versioned IRS content, retrieval timestamps, and SHA-256 fingerprints.
 - Citation-grounded chat-format JSONL export for local model training or
   fine-tuning.
-- Hardware inventory for Windows NPU, GPU, and CPU devices.
+- Hardware inventory for Windows NPU, GPU, and CPU devices, on x64 and Arm64.
 - Local Hugging Face/PEFT trainer that prefers NVIDIA CUDA QLoRA, then real
   DirectML LoRA on AMD, Intel, Qualcomm, or non-CUDA NVIDIA GPUs, and requires
-  explicit consent before CPU fallback.
+  explicit consent before CPU fallback. The trainer detects the Python
+  interpreter's architecture and reports an unusable interpreter by name.
 - Multi-file PDF, CSV, XLSX, XLSM, and TXT financial import.
 - Per-file parse diagnostics with automatic live IRS-verified analysis after
   successful record extraction; unsupported or ambiguous layouts are reported
@@ -255,7 +256,12 @@ git push origin v1.0.0
 
 The `.github/workflows/release.yml` workflow runs the tests, publishes
 self-contained builds for `win-x64` and `win-arm64`, and attaches them to a
-GitHub release. It can also be started manually from the Actions tab.
+GitHub release. It can also be started manually, which requires the tag to
+publish as an input:
+
+```powershell
+gh workflow run release.yml -f tag=v1.0.0
+```
 
 ### If the build path is too long
 
@@ -416,18 +422,48 @@ current directory is not the repository root. `cd` into the clone first, or use
 
 ## Local model training
 
-The Model Trainer tab launches a local Python PEFT/LoRA workflow. The selected
-Python environment must contain:
+The Model Trainer tab launches a local Python PEFT/LoRA workflow. For a CUDA or
+CPU environment, the selected Python must contain:
 
 ```powershell
 python -m pip install torch transformers datasets accelerate peft
 ```
 
-For a non-CUDA Windows GPU, install the tested DirectML runtime:
+For a non-CUDA Windows GPU, install the tested DirectML runtime. These versions
+must be pinned together: `torch-directml` requires torch 2.4.1, and current
+`transformers` releases require torch 2.5 or newer and fail to import against
+2.4.1.
 
 ```powershell
-python -m pip install torch==2.4.1 torchvision==0.19.1 torch-directml==0.2.5.dev240914
+python -m pip install torch==2.4.1 torchvision==0.19.1 torch-directml==0.2.5.dev240914 transformers==4.46.3 datasets==3.1.0 accelerate==1.1.1 peft==0.13.2
 ```
+
+### Trainer platform requirements
+
+Training capability is determined by the architecture of the **Python
+interpreter**, not by the architecture of the machine:
+
+| Interpreter | Trains | Notes |
+| --- | --- | --- |
+| x64 | Yes | PyTorch and `torch-directml` publish Windows x64 wheels. |
+| Arm64 | No | Neither package has ever published a `win_arm64` wheel, so no wheel resolves. |
+| x86 (32-bit) | No | No wheels are published. |
+
+Windows on Arm machines **can** train. Windows runs x64 processes under
+emulation, so an x64 Python installs and runs the x64 wheels normally. This was
+verified on a Snapdragon X Elite (X1E80100): a one-step LoRA optimizer update
+completed through PyTorch DirectML on the Qualcomm Adreno X1-85 GPU, a CPU LoRA
+step also completed, and the trainer's environment check accepted the
+interpreter.
+
+The practical failure on an Arm64 machine is selecting the Arm64-native Python,
+which cannot resolve any wheel no matter how often the install command is run.
+Install the **x64** build of Python from python.org and select it as the trainer
+interpreter. The application detects the interpreter's architecture and names
+this problem explicitly instead of failing part-way through a run.
+
+Accelerator selection order is CUDA GPU, then DirectML GPU, then CPU when CPU
+fallback is explicitly enabled. NPUs are never selected for training.
 
 Enter a local Hugging Face-compatible model folder or model identifier, select
 the exported IRS JSONL dataset, choose an output directory, and start training.
@@ -470,7 +506,6 @@ application's authoritative-source validation and evidence chain.
 Windows ML, QNN, and OpenVINO currently expose NPUs for inference rather than
 model-weight training. Tax Intelligence Studio reports NPUs as
 inference-capable and does not falsely route fine-tuning to them.
-
 Use **Run real accelerator self-test** to execute two measured workloads:
 
 - a real one-step LoRA optimizer update on the selected Windows GPU through

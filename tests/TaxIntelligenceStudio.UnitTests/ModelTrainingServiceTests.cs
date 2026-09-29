@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
 using TaxIntelligenceStudio.Infrastructure.Training;
@@ -14,9 +15,22 @@ public sealed class ModelTrainingServiceTests
         var devices = await service.DetectAsync();
 
         Assert.Contains(devices, device => device.Kind == AcceleratorKind.Cpu);
+
+        // Every detected GPU and the CPU can train, on any architecture: the
+        // x64 wheels run under emulation on Windows on Arm. Only NPUs are
+        // inference-only, and they must say why.
         Assert.All(
-            devices.Where(device => device.Kind == AcceleratorKind.DirectMlGpu),
+            devices.Where(device => device.Kind is AcceleratorKind.DirectMlGpu
+                                        or AcceleratorKind.CudaGpu
+                                        or AcceleratorKind.Cpu),
             device => Assert.True(device.SupportsTraining));
+        Assert.All(
+            devices.Where(device => device.Kind == AcceleratorKind.Npu),
+            device =>
+            {
+                Assert.False(device.SupportsTraining);
+                Assert.False(string.IsNullOrWhiteSpace(device.TrainingUnavailableReason));
+            });
     }
 
     [Fact]
@@ -43,8 +57,14 @@ public sealed class ModelTrainingServiceTests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => service.TrainAsync(request));
 
+            // The NPU must never be chosen as a training device, and the
+            // message must name the device that was rejected. The exact wording
+            // depends on the host architecture, so assert the invariant rather
+            // than the phrasing.
             Assert.Contains("NPU", exception.Message);
-            Assert.Contains("inference", exception.Message);
+            Assert.Null(LocalModelTrainingService.SelectTrainingAccelerator(
+                await new NpuOnlyHardwareService().DetectAsync(),
+                allowCpuFallback: true));
         }
         finally
         {
@@ -261,6 +281,228 @@ public sealed class ModelTrainingServiceTests
         Assert.NotNull(selected);
         Assert.Equal(AcceleratorKind.CudaGpu, selected.Kind);
     }
+
+    [Fact]
+    public void Platform_AllowsTrainingWheelsOnX64Interpreters()
+    {
+        Assert.True(TrainingPlatform.SupportsTrainingWheels(Architecture.X64));
+        Assert.Null(TrainingPlatform.InterpreterUnavailableReason(
+            Architecture.X64,
+            Architecture.Arm64));
+        Assert.Contains("pip install", TrainingPlatform.InstallCommand(directMl: false));
+        Assert.Contains("torch-directml", TrainingPlatform.InstallCommand(directMl: true));
+    }
+
+    [Theory]
+    [InlineData(Architecture.Arm64)]
+    [InlineData(Architecture.X86)]
+    public void Platform_RejectsInterpretersWithoutWheels(Architecture interpreter)
+    {
+        Assert.False(TrainingPlatform.SupportsTrainingWheels(interpreter));
+
+        var reason = TrainingPlatform.InterpreterUnavailableReason(
+            interpreter,
+            Architecture.X64);
+
+        Assert.NotNull(reason);
+        Assert.Contains(TrainingPlatform.Describe(interpreter), reason);
+        Assert.Contains("x64", reason);
+    }
+
+    [Fact]
+    public void Platform_PointsArm64HostsAtEmulatedX64Python()
+    {
+        var reason = TrainingPlatform.InterpreterUnavailableReason(
+            Architecture.Arm64,
+            Architecture.Arm64);
+
+        // The machine can train; the interpreter choice is what blocks it, so
+        // the message must say how to fix it here rather than send the user away.
+        Assert.NotNull(reason);
+        Assert.Contains("emulation", reason);
+        Assert.Contains("DirectML", reason);
+        Assert.NotNull(TrainingPlatform.HostGuidance(Architecture.Arm64));
+        Assert.Null(TrainingPlatform.HostGuidance(Architecture.X64));
+    }
+
+    [Fact]
+    public void Platform_PinsDirectMlPackagesToTorchCompatibleVersions()
+    {
+        var command = TrainingPlatform.InstallCommand(directMl: true);
+
+        // torch-directml requires torch 2.4.1, and unpinned transformers
+        // requires torch >= 2.5, which installs cleanly and then fails to
+        // import. Every package in this command must be pinned together.
+        Assert.Contains("torch==2.4.1", command);
+        Assert.Contains("torch-directml==", command);
+        Assert.Contains("transformers==4.46.3", command);
+        Assert.Contains("peft==0.13.2", command);
+        Assert.DoesNotContain(" transformers ", command);
+    }
+
+    [Theory]
+    [InlineData("AMD64", Architecture.X64)]
+    [InlineData("x86_64", Architecture.X64)]
+    [InlineData("ARM64", Architecture.Arm64)]
+    [InlineData("aarch64", Architecture.Arm64)]
+    [InlineData("x86", Architecture.X86)]
+    public void InterpreterArchitecture_ParsesPlatformMachineValues(
+        string machine,
+        Architecture expected) =>
+        Assert.Equal(expected, LocalModelTrainingService.ParseMachine(machine));
+
+    [Fact]
+    public void InterpreterArchitecture_IgnoresUnknownValues() =>
+        Assert.Null(LocalModelTrainingService.ParseMachine("riscv64"));
+
+    [Fact]
+    public async Task InterpreterArchitecture_MatchesTheRunningInterpreter()
+    {
+        var detected = await LocalModelTrainingService.DetectInterpreterArchitectureAsync(
+            "python",
+            CancellationToken.None);
+
+        // Skip where no interpreter is installed; assert correctness otherwise.
+        if (detected is not null)
+        {
+            Assert.True(
+                detected is Architecture.X64 or Architecture.Arm64 or Architecture.X86);
+        }
+    }
+
+    [Fact]
+    public void GpuDetection_MarksIntegratedArmGpuTrainable()
+    {
+        // Verified on a Snapdragon X Elite: an emulated x64 Python completes a
+        // one-step LoRA update on this GPU through DirectML.
+        var gpu = WindowsHardwareAccelerationService.CreateGpuAccelerator(
+            "Qualcomm(R) Adreno(TM) X1-85 GPU",
+            cudaAvailable: false);
+
+        Assert.Equal(AcceleratorKind.DirectMlGpu, gpu.Kind);
+        Assert.True(gpu.SupportsTraining);
+        Assert.True(gpu.SupportsInference);
+        Assert.Null(gpu.TrainingUnavailableReason);
+    }
+
+    [Fact]
+    public void GpuDetection_UsesDirectMlForNonNvidiaGpus()
+    {
+        var gpu = WindowsHardwareAccelerationService.CreateGpuAccelerator(
+            "AMD Radeon RX 7900 XTX",
+            cudaAvailable: false);
+
+        Assert.Equal(AcceleratorKind.DirectMlGpu, gpu.Kind);
+        Assert.True(gpu.SupportsTraining);
+    }
+
+    [Fact]
+    public void GpuDetection_UsesDirectMlForNvidiaWithoutCudaRuntime()
+    {
+        var gpu = WindowsHardwareAccelerationService.CreateGpuAccelerator(
+            "NVIDIA GeForce RTX 4090",
+            cudaAvailable: false);
+
+        Assert.Equal(AcceleratorKind.DirectMlGpu, gpu.Kind);
+        Assert.True(gpu.SupportsTraining);
+    }
+
+    [Fact]
+    public void GpuDetection_UsesCudaForNvidiaWithCudaRuntime()
+    {
+        var gpu = WindowsHardwareAccelerationService.CreateGpuAccelerator(
+            "NVIDIA GeForce RTX 4090",
+            cudaAvailable: true);
+
+        Assert.Equal(AcceleratorKind.CudaGpu, gpu.Kind);
+        Assert.True(gpu.SupportsTraining);
+    }
+
+    [Fact]
+    public void CpuDetection_CanAlwaysTrain()
+    {
+        var cpu = WindowsHardwareAccelerationService.CreateCpuAccelerator();
+
+        Assert.True(cpu.SupportsTraining);
+        Assert.True(cpu.SupportsInference);
+        Assert.Null(cpu.TrainingUnavailableReason);
+    }
+
+    [Fact]
+    public void NoTrainingDeviceMessage_AddsArm64InterpreterGuidance()
+    {
+        IReadOnlyCollection<ComputeAccelerator> devices =
+        [
+            new(
+                "Snapdragon(R) X Elite NPU",
+                AcceleratorKind.Npu,
+                false,
+                true,
+                "Windows ML",
+                "NPU execution providers run inference, not weight training.")
+        ];
+
+        var message = LocalModelTrainingService.BuildNoTrainingDeviceMessage(
+            devices,
+            allowCpuFallback: false,
+            Architecture.Arm64);
+
+        Assert.Contains("NPU", message);
+        Assert.Contains("x64", message);
+        Assert.Contains("emulation", message);
+    }
+
+    [Fact]
+    public void NoTrainingDeviceMessage_OffersCpuFallbackOnX64()
+    {
+        IReadOnlyCollection<ComputeAccelerator> devices =
+        [
+            new("Snapdragon NPU", AcceleratorKind.Npu, false, true, "Windows ML"),
+            WindowsHardwareAccelerationService.CreateCpuAccelerator()
+        ];
+
+        var message = LocalModelTrainingService.BuildNoTrainingDeviceMessage(
+            devices,
+            allowCpuFallback: false,
+            Architecture.X64);
+
+        Assert.Contains("NPU", message);
+        Assert.Contains("enable CPU fallback", message);
+        Assert.DoesNotContain("emulation", message);
+    }
+
+    [Fact]
+    public void AcceleratorSelection_SkipsUntrainableDeviceAndUsesCpu()
+    {
+        IReadOnlyCollection<ComputeAccelerator> devices =
+        [
+            new(
+                "Snapdragon(R) X Elite NPU",
+                AcceleratorKind.Npu,
+                false,
+                true,
+                "Windows ML",
+                "NPU execution providers run inference, not weight training."),
+            new("System CPU", AcceleratorKind.Cpu, true, true, "PyTorch CPU")
+        ];
+
+        var selected = LocalModelTrainingService.SelectTrainingAccelerator(
+            devices,
+            allowCpuFallback: true);
+
+        Assert.NotNull(selected);
+        Assert.Equal(AcceleratorKind.Cpu, selected.Kind);
+    }
+
+    [Theory]
+    [InlineData("Snapdragon(R) X Elite - X1E80100 - Qualcomm(R) Hexagon(TM) NPU", true)]
+    [InlineData("Intel(R) AI Boost", true)]
+    [InlineData("Neural Processing Unit", true)]
+    [InlineData("USB Input Device", false)]
+    [InlineData("HID-compliant mouse", false)]
+    [InlineData("Generic Input Controller", false)]
+    public void NpuDetection_DoesNotMatchInputDevices(string name, bool expected) =>
+        Assert.Equal(expected, WindowsHardwareAccelerationService.IsNpu(name));
 
     private sealed class NpuOnlyHardwareService : IHardwareAccelerationService
     {

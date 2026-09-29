@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
+using TaxIntelligenceStudio.Infrastructure.Training;
 
 namespace TaxIntelligenceStudio.Desktop.ViewModels;
 
@@ -430,10 +431,33 @@ public partial class MainViewModel(
                 Replace(Accelerators, devices);
                 var trainingDevice = devices.FirstOrDefault(device => device.SupportsTraining);
                 var npus = devices.Count(device => device.Kind == AcceleratorKind.Npu);
-                TrainingStatus = trainingDevice is null
-                    ? $"Detected {devices.Count} compute device(s), including {npus} NPU(s), but no supported training device."
-                    : $"Preferred trainer: {trainingDevice.Name} ({trainingDevice.Runtime}). " +
-                      $"{npus} NPU(s) available for inference/evaluation.";
+                var platform = TrainingPlatform.Describe(TrainingPlatform.CurrentArchitecture);
+                if (trainingDevice is null)
+                {
+                    var reasons = devices
+                        .Where(device => !string.IsNullOrWhiteSpace(device.TrainingUnavailableReason))
+                        .Select(device => device.TrainingUnavailableReason!)
+                        .Distinct()
+                        .ToList();
+                    TrainingStatus =
+                        $"Windows {platform}: detected {devices.Count} compute device(s), " +
+                        $"including {npus} NPU(s), but no supported training device. " +
+                        string.Join(" ", reasons);
+                }
+                else
+                {
+                    TrainingStatus =
+                        $"Windows {platform} - preferred trainer: {trainingDevice.Name} " +
+                        $"({trainingDevice.Runtime}). " +
+                        $"{npus} NPU(s) available for inference/evaluation.";
+
+                    var hostGuidance = TrainingPlatform.HostGuidance(
+                        TrainingPlatform.CurrentArchitecture);
+                    if (hostGuidance is not null)
+                    {
+                        TrainingStatus += $" {hostGuidance}";
+                    }
+                }
             }
             catch (Exception exception)
             {

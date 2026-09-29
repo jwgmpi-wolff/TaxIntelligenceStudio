@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Management;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
@@ -20,18 +21,55 @@ public sealed class WindowsHardwareAccelerationService : IHardwareAccelerationSe
             AddNpus(accelerators);
         }
 
-        accelerators.Add(new ComputeAccelerator(
-            "System CPU",
-            AcceleratorKind.Cpu,
-            true,
-            true,
-            "PyTorch CPU"));
+        accelerators.Add(CreateCpuAccelerator());
 
         return accelerators
             .DistinctBy(item => new { item.Name, item.Kind })
             .OrderBy(item => item.Kind)
             .ToList();
     }
+
+    /// <summary>
+    /// Builds the accelerator entry for a display adapter. CUDA requires an
+    /// NVIDIA GPU with a working CUDA runtime; every other DirectX 12 adapter
+    /// trains through DirectML, including Arm64 integrated GPUs, which are
+    /// driven by an emulated x64 Python.
+    /// </summary>
+    internal static ComputeAccelerator CreateGpuAccelerator(
+        string name,
+        bool cudaAvailable)
+    {
+        var isNvidia = name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
+
+        if (isNvidia && cudaAvailable)
+        {
+            return new ComputeAccelerator(
+                name,
+                AcceleratorKind.CudaGpu,
+                true,
+                true,
+                "PyTorch CUDA");
+        }
+
+        return new ComputeAccelerator(
+            name,
+            AcceleratorKind.DirectMlGpu,
+            true,
+            true,
+            "PyTorch DirectML");
+    }
+
+    /// <summary>
+    /// The CPU is always present and can always train, though far more slowly
+    /// than any GPU path.
+    /// </summary>
+    internal static ComputeAccelerator CreateCpuAccelerator() =>
+        new(
+            "System CPU",
+            AcceleratorKind.Cpu,
+            true,
+            true,
+            "PyTorch CPU");
 
     [SupportedOSPlatform("windows")]
     private static void AddVideoControllers(
@@ -49,20 +87,12 @@ public sealed class WindowsHardwareAccelerationService : IHardwareAccelerationSe
                 continue;
             }
 
-            var isNvidia = name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
             if (IsVirtualDisplayAdapter(name))
             {
                 continue;
             }
 
-            accelerators.Add(new ComputeAccelerator(
-                name,
-                isNvidia && cudaAvailable
-                    ? AcceleratorKind.CudaGpu
-                    : AcceleratorKind.DirectMlGpu,
-                true,
-                true,
-                isNvidia && cudaAvailable ? "PyTorch CUDA" : "PyTorch DirectML"));
+            accelerators.Add(CreateGpuAccelerator(name, cudaAvailable));
         }
     }
 
@@ -85,12 +115,18 @@ public sealed class WindowsHardwareAccelerationService : IHardwareAccelerationSe
                 AcceleratorKind.Npu,
                 false,
                 true,
-                "Windows ML execution provider"));
+                "Windows ML execution provider",
+                "NPU execution providers run inference, not weight training."));
         }
     }
 
-    private static bool IsNpu(string name) =>
-        name.Contains("NPU", StringComparison.OrdinalIgnoreCase) ||
+    internal static bool IsNpu(string name) =>
+        // "NPU" must be matched as a whole word. A naive substring check also
+        // matches "Input", which misreports every USB input device as an NPU.
+        System.Text.RegularExpressions.Regex.IsMatch(
+            name,
+            @"\bNPU\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase) ||
         name.Contains("Neural Processing", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("AI Boost", StringComparison.OrdinalIgnoreCase) ||
         name.Contains("Hexagon", StringComparison.OrdinalIgnoreCase);
