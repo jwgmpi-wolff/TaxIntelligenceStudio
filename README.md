@@ -34,6 +34,8 @@ The solution follows a layered desktop architecture:
 - `TaxIntelligenceStudio.Service` is an optional localhost ASP.NET Core service.
 - `TaxIntelligenceStudio.UnitTests` contains synthetic workflow and policy
   regression tests.
+- `scripts` contains the Windows deployment script described in
+  [Deployment](#deployment).
 
 ## End-to-end workflow
 
@@ -107,6 +109,9 @@ The solution follows a layered desktop architecture:
   financial import, local OCR integration, standard-form field pairing,
   statement signs, Fidelity summaries, tax mappings, grounded datasets, and
   PDF/DOCX output.
+- Scripted Windows deployment to a remote destination over PowerShell
+  Remoting, with destination architecture detection, staged rollback-safe
+  publishing, Start Menu/Desktop shortcut creation, and uninstall.
 
 ## Financial document handling
 
@@ -141,6 +146,14 @@ Requirements:
 - Windows 10 or later
 - .NET 9 SDK
 
+All commands below are run **from the root of a cloned repository**. Clone it
+first if you have not already:
+
+```powershell
+git clone https://github.com/jwgmpi-wolff/TaxIntelligenceStudio.git
+cd TaxIntelligenceStudio
+```
+
 ```powershell
 dotnet restore TaxIntelligenceStudio.sln
 dotnet build TaxIntelligenceStudio.sln
@@ -154,39 +167,139 @@ Run the optional local API:
 dotnet run --project src\TaxIntelligenceStudio.Service
 ```
 
-## Deploy locally on Windows
+## Deployment
 
-For everyday use (not development), publish a self-contained build and run it
-directly from its output folder. No separate .NET runtime install is required
-on the target Windows machine.
+`scripts\Deploy-Windows.ps1` builds the desktop application and installs it on
+a Windows destination. **The destination is assumed to be remote.** The script
+publishes a self-contained payload on the build machine and copies it to the
+destination over PowerShell Remoting, so the destination needs no .NET SDK, no
+.NET runtime, no source tree, and no build tooling.
+
+The script resolves the repository root from its own location, so it can be
+invoked from any working directory.
+
+### Prerequisites
+
+On the **build machine** (where you run the script):
+
+- Windows 10 or later
+- .NET 9 SDK
+- A clone of this repository
+
+On the **destination machine**:
+
+- Windows 10 or later
+- PowerShell Remoting enabled:
+
+  ```powershell
+  Enable-PSRemoting -Force
+  ```
+
+If the two machines are not in the same domain, add the destination to the
+build machine's trusted hosts, or use `-UseSSL`:
+
+```powershell
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value 'TAX-WS01' -Concatenate
+```
+
+### Deploy to a remote machine
+
+```powershell
+.\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01 -Credential (Get-Credential)
+```
+
+Run the tests first and add a Desktop shortcut:
+
+```powershell
+.\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01 -RunTests -DesktopShortcut
+```
+
+Deploy over HTTPS (WinRM 5986):
+
+```powershell
+.\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01 -UseSSL -Credential (Get-Credential)
+```
+
+The script reports the destination host, signed-in user, OS version and
+architecture, install path, and payload size before and after installing.
+
+### Deploy to this machine
+
+Local deployment is an explicit opt-in:
+
+```powershell
+.\scripts\Deploy-Windows.ps1 -Local
+```
+
+### Uninstall
+
+```powershell
+.\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01 -Uninstall
+.\scripts\Deploy-Windows.ps1 -Local -Uninstall
+```
+
+Uninstall removes the installed application and its shortcuts. Local data under
+`%LOCALAPPDATA%\TaxIntelligenceStudio` is deliberately preserved.
+
+### Parameters
+
+| Parameter | Description |
+| --- | --- |
+| `-ComputerName` | Destination computer. Required unless `-Local` is used. |
+| `-Credential` | Credential used to connect to the destination. |
+| `-Local` | Deploy to this machine instead of a remote destination. |
+| `-UseSSL` | Connect over HTTPS (WinRM 5986) instead of HTTP. |
+| `-Port` | Override the WinRM port. |
+| `-Authentication` | WinRM authentication mechanism (for example `Negotiate`, `Credssp`). |
+| `-Runtime` | `win-x64`, `win-arm64`, or `win-x86`. Auto-detected from the destination when omitted. |
+| `-Configuration` | `Release` (default) or `Debug`. |
+| `-InstallPath` | Install directory on the destination. Defaults to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio`. |
+| `-FrameworkDependent` | Publish a framework-dependent build. The destination must already have the .NET 9 Desktop Runtime. |
+| `-NoShortcut` | Skip creating the Start Menu shortcut. |
+| `-DesktopShortcut` | Also create a Desktop shortcut. |
+| `-RunTests` | Run the unit tests before publishing and abort on failure. |
+| `-Uninstall` | Remove the application and shortcuts from the destination. |
+
+Full help is available with `Get-Help .\scripts\Deploy-Windows.ps1 -Full`.
+
+### Behavior and limitations
+
+- The target runtime is detected from the **destination's** architecture, so an
+  ARM64 destination receives a `win-arm64` build automatically. Override with
+  `-Runtime` only when cross-publishing deliberately.
+- The payload is published to a temporary staging folder first. A failed build
+  never leaves a partially overwritten installation on the destination.
+- Deployment is refused while the application is running on the destination,
+  so a live installation is never corrupted mid-copy.
+- A self-contained payload is roughly 200 MB.
+- The application runs on the destination under the account you connect as, and
+  writes its data to that account's `%LOCALAPPDATA%\TaxIntelligenceStudio`, per
+  [Local data locations](#local-data-locations).
+- A WinRM session has no interactive desktop, so the script does not launch the
+  GUI on a remote destination. Sign in to the destination and use the Start
+  Menu shortcut.
+- No signed MSI installer is produced yet; see
+  [Current scope and next increments](#current-scope-and-next-increments).
+
+### Manual publish
+
+To produce a payload without the script, run from the repository root:
 
 ```powershell
 dotnet publish src\TaxIntelligenceStudio.Desktop `
-  -c Release `
-  -r win-x64 `
+  --configuration Release `
+  --runtime win-x64 `
   --self-contained true `
   -p:PublishSingleFile=true `
-  -o dist\TaxIntelligenceStudio
+  --output dist\TaxIntelligenceStudio
 ```
 
-Then launch the published executable:
+Use `--runtime win-arm64` for an ARM64 destination. Copy the output folder to
+the destination and run `TaxIntelligenceStudio.Desktop.exe`.
 
-```powershell
-dist\TaxIntelligenceStudio\TaxIntelligenceStudio.Desktop.exe
-```
-
-Notes:
-
-- Use `-r win-arm64` instead of `-r win-x64` when publishing for an ARM64
-  Windows device.
-- The published folder is self-contained; copy it to another Windows 10 or
-  later machine and run the `.exe` without installing the .NET 9 SDK or
-  runtime there.
-- Local data (database, model output, and active agent selection) is still
-  written under `%LOCALAPPDATA%\TaxIntelligenceStudio` on whichever machine
-  runs the published build, per [Local data locations](#local-data-locations).
-- No signed MSI installer is provided yet; see
-  [Current scope and next increments](#current-scope-and-next-increments).
+If this fails with `MSBUILD : error MSB1009: Project file does not exist`, the
+current directory is not the repository root. `cd` into the clone first, or use
+`scripts\Deploy-Windows.ps1`, which is directory independent.
 
 ## Local model training
 
