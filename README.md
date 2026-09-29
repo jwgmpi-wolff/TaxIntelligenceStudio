@@ -154,6 +154,40 @@ Run the optional local API:
 dotnet run --project src\TaxIntelligenceStudio.Service
 ```
 
+## Deploy locally on Windows
+
+For everyday use (not development), publish a self-contained build and run it
+directly from its output folder. No separate .NET runtime install is required
+on the target Windows machine.
+
+```powershell
+dotnet publish src\TaxIntelligenceStudio.Desktop `
+  -c Release `
+  -r win-x64 `
+  --self-contained true `
+  -p:PublishSingleFile=true `
+  -o dist\TaxIntelligenceStudio
+```
+
+Then launch the published executable:
+
+```powershell
+dist\TaxIntelligenceStudio\TaxIntelligenceStudio.Desktop.exe
+```
+
+Notes:
+
+- Use `-r win-arm64` instead of `-r win-x64` when publishing for an ARM64
+  Windows device.
+- The published folder is self-contained; copy it to another Windows 10 or
+  later machine and run the `.exe` without installing the .NET 9 SDK or
+  runtime there.
+- Local data (database, model output, and active agent selection) is still
+  written under `%LOCALAPPDATA%\TaxIntelligenceStudio` on whichever machine
+  runs the published build, per [Local data locations](#local-data-locations).
+- No signed MSI installer is provided yet; see
+  [Current scope and next increments](#current-scope-and-next-increments).
+
 ## Local model training
 
 The Model Trainer tab launches a local Python PEFT/LoRA workflow. The selected
