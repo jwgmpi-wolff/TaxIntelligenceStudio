@@ -361,11 +361,19 @@ try {
         throw 'The .NET SDK was not found on PATH of this build machine. Install the .NET 9 SDK from https://dotnet.microsoft.com/download and re-run this script.'
     }
 
-    $sdkVersion = (& dotnet --version).Trim()
+    # global.json is resolved from the current working directory, not from the
+    # project path, so all SDK detection and builds run inside the repository.
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        $sdkVersion = (& dotnet --version).Trim()
+    }
+    finally {
+        Pop-Location
+    }
+
     if ([Version](($sdkVersion -split '-')[0]) -lt [Version]'9.0.0') {
         throw "The .NET 9 SDK is required on this build machine, but '$sdkVersion' is active."
     }
-
     if (-not $Runtime) {
         $Runtime = switch ($destination.OSArchitecture) {
             'Arm64' { 'win-arm64' }
@@ -389,9 +397,17 @@ try {
 
     if ($RunTests) {
         Write-Step 'Running unit tests on the build machine'
-        & dotnet test $Solution --configuration $Configuration --nologo
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unit tests failed with exit code $LASTEXITCODE. Deployment aborted."
+        Push-Location -LiteralPath $RepoRoot
+        try {
+            & dotnet test $Solution --configuration $Configuration --nologo
+            $testExitCode = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+
+        if ($testExitCode -ne 0) {
+            throw "Unit tests failed with exit code $testExitCode. Deployment aborted."
         }
         Write-Detail 'All tests passed.'
     }
@@ -416,9 +432,17 @@ try {
             '-p:DebugType=none'
         )
 
-        & dotnet @publishArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "dotnet publish failed with exit code $LASTEXITCODE."
+        Push-Location -LiteralPath $RepoRoot
+        try {
+            & dotnet @publishArgs
+            $publishExitCode = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+
+        if ($publishExitCode -ne 0) {
+            throw "dotnet publish failed with exit code $publishExitCode."
         }
 
         if (-not (Test-Path -LiteralPath (Join-Path $stagingPath $ExeName))) {

@@ -167,13 +167,126 @@ Run the optional local API:
 dotnet run --project src\TaxIntelligenceStudio.Service
 ```
 
+## Install on a Windows machine
+
+`scripts\Install.ps1` installs the application on a machine that has **nothing
+set up in advance** — no clone of this repository, no Git, no .NET SDK or
+runtime, and no build tooling. The script downloads everything it needs,
+installs to a per-user location, and creates shortcuts. Administrator rights
+are not required.
+
+Because this repository is **private**, the installer must authenticate to
+GitHub. See [Credentials](#credentials) below.
+
+### Install
+
+Run this on the machine you want the application installed on:
+
+```powershell
+$env:GITHUB_TOKEN = '<personal access token>'
+irm -Headers @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github.raw' } `
+    'https://api.github.com/repos/jwgmpi-wolff/TaxIntelligenceStudio/contents/scripts/Install.ps1?ref=main' |
+    Out-File $env:TEMP\Install.ps1
+& $env:TEMP\Install.ps1
+```
+
+If you already have a copy of the script, simply run it:
+
+```powershell
+.\Install.ps1
+```
+
+The installer:
+
+1. Resolves a GitHub credential.
+2. Downloads a prebuilt release asset for the machine's architecture if one
+   exists. This requires no compilation.
+3. Otherwise downloads the source archive and builds it, installing a private
+   .NET 9 SDK under `%LOCALAPPDATA%\TaxIntelligenceStudio\dotnet-sdk` if the
+   machine has no suitable SDK. The private SDK is never added to `PATH` and
+   does not affect other tooling on the machine.
+4. Installs to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio` and creates a
+   Start Menu shortcut.
+
+The target architecture (`win-x64` or `win-arm64`) is detected automatically.
+
+### Credentials
+
+The installer resolves a token in this order, using the first one available:
+
+1. The `-Token` parameter.
+2. The `GITHUB_TOKEN` environment variable.
+3. `gh auth token`, if the GitHub CLI is installed and signed in.
+
+A fine-grained or classic personal access token with **read access to this
+repository's contents** is sufficient.
+
+### Uninstall
+
+```powershell
+.\Install.ps1 -Uninstall
+```
+
+This removes the application and its shortcuts. Local data in
+`%LOCALAPPDATA%\TaxIntelligenceStudio` is preserved.
+
+### Install parameters
+
+| Parameter | Description |
+| --- | --- |
+| `-Token` | GitHub token. Overrides all other credential sources. |
+| `-InstallPath` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio`. |
+| `-WorkPath` | Temporary build directory. Use a short path such as `C:\tis` if the default exceeds the Windows 260 character path limit. |
+| `-Runtime` | `win-x64` or `win-arm64`. Detected automatically when omitted. |
+| `-Reference` | Branch, tag, or commit to install from. Defaults to `main`. |
+| `-FromSource` | Always build from source, ignoring prebuilt releases. |
+| `-DesktopShortcut` | Also create a Desktop shortcut. |
+| `-Uninstall` | Remove the application. |
+
+### Publishing prebuilt releases
+
+Building from source takes several minutes. To make installs fast, publish a
+release so the installer can download a prebuilt payload instead:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The `.github/workflows/release.yml` workflow runs the tests, publishes
+self-contained builds for `win-x64` and `win-arm64`, and attaches them to a
+GitHub release. It can also be started manually from the Actions tab.
+
+### If the build path is too long
+
+Windows limits paths to 260 characters unless long path support is enabled.
+The installer uses short temporary paths, but a deeply nested `%TEMP%` can
+still overflow the limit. Pass a shorter working directory:
+
+```powershell
+.\Install.ps1 -WorkPath C:\tis
+```
+
+Or enable long path support once, as an administrator:
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+    -Name LongPathsEnabled -Value 1
+```
+
 ## Deployment
 
-`scripts\Deploy-Windows.ps1` builds the desktop application and installs it on
-a Windows destination. **The destination is assumed to be remote.** The script
-publishes a self-contained payload on the build machine and copies it to the
-destination over PowerShell Remoting, so the destination needs no .NET SDK, no
-.NET runtime, no source tree, and no build tooling.
+`scripts\Deploy-Windows.ps1` builds the desktop application **on this machine**
+and pushes it to a Windows destination over PowerShell Remoting. Use it when
+you have a clone and want to install onto one or more other machines without
+touching them directly. If the destination has no clone and you want it to
+install itself, use [`scripts\Install.ps1`](#install-on-a-windows-machine)
+instead.
+
+**The destination is assumed to be remote.** The script publishes a
+self-contained payload on the build machine and copies it to the destination,
+so the destination needs no .NET SDK, no .NET runtime, no source tree, and no
+build tooling.
 
 The script resolves the repository root from its own location, so it can be
 invoked from any working directory.

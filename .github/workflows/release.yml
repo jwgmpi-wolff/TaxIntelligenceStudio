@@ -1,0 +1,99 @@
+name: Release
+
+# Publishes self-contained Windows builds so that scripts/Install.ps1 can
+# install the application on a destination machine without compiling anything
+# and without requiring the .NET SDK there.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create or update (for example v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Publish ${{ matrix.runtime }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [win-x64, win-arm64]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore TaxIntelligenceStudio.sln
+
+      - name: Test
+        run: dotnet test TaxIntelligenceStudio.sln --configuration Release --nologo
+
+      - name: Publish
+        run: >
+          dotnet publish src/TaxIntelligenceStudio.Desktop
+          --configuration Release
+          --runtime ${{ matrix.runtime }}
+          --self-contained true
+          --output publish/${{ matrix.runtime }}
+          --nologo
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableWindowsTargeting=true
+          -p:DebugType=none
+
+      - name: Verify published executable
+        shell: pwsh
+        run: |
+          $exe = "publish/${{ matrix.runtime }}/TaxIntelligenceStudio.Desktop.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Expected '$exe' was not produced."
+          }
+          Write-Host "Published $([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB executable."
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Compress-Archive -Path "publish/${{ matrix.runtime }}/*" `
+            -DestinationPath "artifacts/TaxIntelligenceStudio-${{ matrix.runtime }}.zip" -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TaxIntelligenceStudio-${{ matrix.runtime }}
+          path: artifacts/TaxIntelligenceStudio-${{ matrix.runtime }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*.zip
