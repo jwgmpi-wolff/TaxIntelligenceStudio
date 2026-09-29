@@ -9,8 +9,8 @@
                  Icon="Assets/TaxIntelligenceStudio.ico"
                  Width="1240"
                  Height="820"
-                 MinWidth="1000"
-                 MinHeight="680"
+                 MinWidth="480"
+                 MinHeight="480"
                  WindowStartupLocation="CenterScreen"
                  ExtendsContentIntoTitleBar="True">
     <Grid>
@@ -24,16 +24,23 @@
                      ShowMaximize="True"
                      ShowClose="True" />
 
-        <TabControl Grid.Row="1" Margin="24,12,24,16">
+        <TabControl x:Name="AppTabs" Grid.Row="1" Margin="24,12,24,16">
             <TabItem Header="1  IRS Knowledge">
-                <Grid Margin="20">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="KnowledgeLayout" Margin="20">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition x:Name="KnowledgeRowGap" Height="0" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition x:Name="KnowledgePrimaryColumn" Width="2*" />
+                        <ColumnDefinition x:Name="KnowledgeColumnGap" Width="24" />
+                        <ColumnDefinition x:Name="KnowledgeSecondaryColumn" Width="3*" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel>
+                    <StackPanel x:Name="KnowledgeControls">
                         <TextBlock Text="IRS corpus ingestion" FontSize="28" FontWeight="SemiBold" />
                         <TextBlock Margin="0,8,0,20"
                                    TextWrapping="Wrap"
@@ -54,7 +61,8 @@
                         </WrapPanel>
                     </StackPanel>
 
-                    <Border Grid.Column="2"
+                    <Border x:Name="KnowledgeStatusCard"
+                            Grid.Column="2"
                             Padding="24"
                             CornerRadius="12"
                             Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
@@ -70,6 +78,7 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="2  Financial Import">
@@ -191,19 +200,22 @@
             </TabItem>
 
             <TabItem Header="4  Model Trainer">
-                <Grid Margin="20">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="TrainerLayout" Margin="20">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="180" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition x:Name="TrainerPrimaryColumn" Width="*" />
+                        <ColumnDefinition x:Name="TrainerColumnGap" Width="24" />
+                        <ColumnDefinition x:Name="TrainerSecondaryColumn" Width="*" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel>
+                    <StackPanel x:Name="TrainerHeader">
                         <TextBlock Text="Hardware-accelerated LoRA trainer"
                                    FontSize="28"
                                    FontWeight="SemiBold" />
@@ -220,7 +232,8 @@
                         </WrapPanel>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="1"
+                    <DataGrid x:Name="AcceleratorsGrid"
+                              Grid.Row="1"
                               Grid.ColumnSpan="3"
                               Margin="0,16,0,16"
                               ItemsSource="{Binding Accelerators}"
@@ -236,7 +249,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel Grid.Row="2">
+                    <StackPanel x:Name="TrainerSettings" Grid.Row="2">
                         <TextBlock Text="Base type / model family" />
                         <ComboBox Margin="0,5,0,12"
                                   ItemsSource="{Binding ModelFamilies}"
@@ -263,7 +276,7 @@
                                  Text="{Binding PythonExecutable, UpdateSourceTrigger=PropertyChanged}" />
                     </StackPanel>
 
-                    <StackPanel Grid.Row="2" Grid.Column="2">
+                    <StackPanel x:Name="TrainerRunPanel" Grid.Row="2" Grid.Column="2">
                         <TextBlock Text="Adapter output directory" />
                         <DockPanel Margin="0,5,0,12">
                             <ui:Button DockPanel.Dock="Right"
@@ -306,22 +319,26 @@
                                  VerticalScrollBarVisibility="Auto" />
                     </StackPanel>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="5  Agent Model">
-                <Grid Margin="20">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="AgentLayout" Margin="20">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="220" />
                         <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition x:Name="AgentPrimaryColumn" Width="*" />
+                        <ColumnDefinition x:Name="AgentColumnGap" Width="24" />
+                        <ColumnDefinition x:Name="AgentSecondaryColumn" Width="*" />
                     </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.ColumnSpan="3">
+                    <StackPanel x:Name="AgentHeader" Grid.ColumnSpan="3">
                         <TextBlock Text="Agent model deployment"
                                    FontSize="28"
                                    FontWeight="SemiBold" />
@@ -341,7 +358,8 @@
                         </DockPanel>
                     </StackPanel>
 
-                    <DataGrid Grid.Row="1"
+                    <DataGrid x:Name="AgentModelsGrid"
+                              Grid.Row="1"
                               Grid.ColumnSpan="3"
                               Margin="0,16,0,16"
                               ItemsSource="{Binding AgentModels}"
@@ -359,7 +377,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel Grid.Row="2">
+                    <StackPanel x:Name="AgentDeploymentPanel" Grid.Row="2">
                         <TextBlock Text="Deployment runtime" />
                         <ComboBox Margin="0,5,0,12"
                                   ItemsSource="{Binding AgentRuntimes}"
@@ -387,7 +405,7 @@
                                  VerticalScrollBarVisibility="Auto" />
                     </StackPanel>
 
-                    <StackPanel Grid.Row="2" Grid.Column="2">
+                    <StackPanel x:Name="AgentTestPanel" Grid.Row="2" Grid.Column="2">
                         <TextBlock Text="Local agent test prompt" />
                         <TextBox Margin="0,5,0,12"
                                  Height="80"
@@ -408,16 +426,24 @@
                                  VerticalScrollBarVisibility="Auto" />
                     </StackPanel>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem Header="6  Reports">
-                <Grid Margin="20">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                <Grid x:Name="ReportsLayout" Margin="20">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition x:Name="ReportsRowGap" Height="0" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition x:Name="ReportsPrimaryColumn" Width="2*" />
+                        <ColumnDefinition x:Name="ReportsColumnGap" Width="24" />
+                        <ColumnDefinition x:Name="ReportsSecondaryColumn" Width="3*" />
                     </Grid.ColumnDefinitions>
-                    <StackPanel>
+                    <StackPanel x:Name="ReportsControls">
                         <TextBlock Text="Tax workpaper export" FontSize="28" FontWeight="SemiBold" />
                         <TextBlock Margin="0,8,0,20"
                                    TextWrapping="Wrap"
@@ -431,7 +457,8 @@
                                        Content="Export Word" />
                         </WrapPanel>
                     </StackPanel>
-                    <Border Grid.Column="2"
+                    <Border x:Name="ReportsStatusCard"
+                            Grid.Column="2"
                             Padding="24"
                             CornerRadius="12"
                             Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
@@ -443,6 +470,7 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+                </ScrollViewer>
             </TabItem>
         </TabControl>
 
