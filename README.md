@@ -572,10 +572,46 @@ no credential and no Azure subscription required — and writes a CSV to
 .\scripts\Get-AzureRetailPrices.ps1 -ServiceName 'Virtual Machines' -ArmRegionName 'eastus'
 ```
 
-The run log and a run result recording the filter, record count, and CSV path
-are collected to the container. Narrow broad queries with `-Filter`,
-`-ServiceName`, `-ArmRegionName`, `-PriceType`, or `-MaxRecords`; an unfiltered
-export retrieves every meter Azure publishes and takes a long time.
+The run log and a run result recording the filter, record count, part number
+match counts, and CSV path are collected to the container. Narrow broad queries
+with `-Filter`, `-ServiceName`, `-ArmRegionName`, `-PriceType`, or
+`-MaxRecords`; an unfiltered export retrieves every meter Azure publishes and
+takes a long time.
+
+#### Part numbers
+
+The retail prices API does not publish part numbers. A part number is the
+identifier that appears on your invoice and in the price sheet, so it has to
+come from one of those, joined to retail prices on `meterId`.
+
+Supply a price sheet or invoice export — CSV, or a `.zip` containing one:
+
+```powershell
+.\scripts\Get-AzureRetailPrices.ps1 -ServiceName 'Virtual Machines' `
+  -PriceSheetPath C:\temp\pricesheet.csv
+```
+
+Header names are matched on their letters alone, so `MeterID`, `Meter ID`, and
+`meterId` all work, as do `PartNumber`, `Part Number`, and `Part Num`.
+
+Or have the script download the price sheet:
+
+```powershell
+az billing account list                      # find the billing account id
+az billing profile list --account-name <id>  # find the billing profile id
+
+.\scripts\Get-AzureRetailPrices.ps1 -ServiceName 'Virtual Machines' `
+  -BillingAccountId <id> -BillingProfileId <profile> -InvoiceId <invoice>
+```
+
+Downloading requires a billing role such as Billing Profile Reader. A
+subscription owner does not have it by default — the script reports that
+explicitly and tells you to request the role or use `-PriceSheetPath`.
+
+`partNumber` is always the first column, even when no price sheet is supplied
+(left empty), so the CSV schema never changes. The price sheet is resolved
+before the export begins, so a bad path or a missing role fails immediately
+rather than after a long download.
 
 | Parameter | Description |
 | --- | --- |
@@ -585,6 +621,10 @@ export retrieves every meter Azure publishes and takes a long time.
 | `-PriceType` | `Consumption`, `Reservation`, or `DevTestConsumption`. |
 | `-CurrencyCode` | Currency for returned prices. Defaults to `USD`. |
 | `-MaxRecords` | Stop after this many rows. `0` (default) retrieves everything matched. |
+| `-PriceSheetPath` | Price sheet or invoice CSV (or `.zip`) supplying part numbers. |
+| `-BillingAccountId` | Download the price sheet instead of supplying a file. |
+| `-BillingProfileId` | Billing profile for the download. Required on a Microsoft Customer Agreement. |
+| `-InvoiceId` | Download the price sheet for one specific invoice. |
 | `-OutputPath` | CSV file to write. Defaults to `C:\temp\azure_retail_prices.csv`. |
 | `-ResultsPath` | Collector container. Defaults to `C:\temp\TaxIntelligenceStudio`. |
 
