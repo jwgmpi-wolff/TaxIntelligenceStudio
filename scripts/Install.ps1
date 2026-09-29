@@ -138,8 +138,30 @@ function Write-Note {
     Write-Host "    $Message" -ForegroundColor Yellow
 }
 
+# RuntimeInformation.OSArchitecture is missing on some Windows PowerShell 5.1 /
+# .NET Framework installs and reports the emulated architecture under x64
+# emulation on Arm64, so prefer the machine-wide native value in the registry.
+function Get-NativeArchitecture {
+    $native = $null
+    try {
+        $native = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+    }
+    catch {
+        $native = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($native)) {
+        $native = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    }
+    switch ($native.ToUpperInvariant()) {
+        'ARM64' { return 'Arm64' }
+        'AMD64' { return 'X64' }
+        'X86' { return 'X86' }
+        default { return $native }
+    }
+}
+
 function Get-TargetRuntime {
-    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    $architecture = Get-NativeArchitecture
     switch ($architecture) {
         'Arm64' { return 'win-arm64' }
         'X64' { return 'win-x64' }
@@ -481,7 +503,7 @@ function Write-CollectedResult {
             computer         = $env:COMPUTERNAME
             user             = "$env:USERDOMAIN\$env:USERNAME"
             windows          = [System.Environment]::OSVersion.Version.ToString()
-            architecture     = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            architecture     = Get-NativeArchitecture
             runtime          = $Runtime
             installPath      = $InstallPath
             collectorContainer = $CollectorContainer
@@ -556,7 +578,7 @@ if (-not $Runtime) {
 
 Write-Detail "Computer: $env:COMPUTERNAME"
 Write-Detail "User: $env:USERDOMAIN\$env:USERNAME"
-Write-Detail "Windows: $osVersion ($([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture))"
+Write-Detail "Windows: $osVersion ($(Get-NativeArchitecture))"
 Write-Detail "Runtime: $Runtime"
 Write-Detail "Install path: $InstallPath"
 

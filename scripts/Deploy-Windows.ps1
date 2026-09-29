@@ -194,7 +194,25 @@ $Solution = Join-Path $RepoRoot 'TaxIntelligenceStudio.sln'
 $ResolveDestinationInfo = {
     param([string]$RequestedInstallPath, [string]$AppName)
 
-    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    # RuntimeInformation.OSArchitecture is missing on some Windows PowerShell 5.1 /
+    # .NET Framework installs and reports the emulated architecture under x64
+    # emulation on Arm64, so prefer the machine-wide native value in the registry.
+    $nativeArchitecture = $null
+    try {
+        $nativeArchitecture = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+    }
+    catch {
+        $nativeArchitecture = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($nativeArchitecture)) {
+        $nativeArchitecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    }
+    $architecture = switch ($nativeArchitecture.ToUpperInvariant()) {
+        'ARM64' { 'Arm64' }
+        'AMD64' { 'X64' }
+        'X86' { 'X86' }
+        default { $nativeArchitecture }
+    }
     $installPath = if ([string]::IsNullOrWhiteSpace($RequestedInstallPath)) {
         Join-Path $env:LOCALAPPDATA 'Programs\TaxIntelligenceStudio'
     }
