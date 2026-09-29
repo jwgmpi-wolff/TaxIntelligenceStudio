@@ -42,8 +42,13 @@
 
 .PARAMETER WorkPath
     Temporary working directory used while downloading and building. Defaults
-    to a short folder under %TEMP%. Specify a short path such as C:\tis if the
-    default still exceeds the Windows 260 character path limit.
+    to a short folder inside the collector container (C:\temp\TaxIntelligenceStudio).
+    Specify a short path such as C:\tis if the default still exceeds the Windows
+    260 character path limit.
+
+.PARAMETER ResultsPath
+    Collector container: the single local folder that receives the install log
+    and the install result file. Defaults to C:\temp\TaxIntelligenceStudio.
 
 .PARAMETER FromSource
     Always build from source, even when a prebuilt release asset is available.
@@ -82,6 +87,8 @@ param(
 
     [string]$WorkPath,
 
+    [string]$ResultsPath,
+
     [switch]$FromSource,
     [switch]$NoShortcut,
     [switch]$DesktopShortcut,
@@ -99,6 +106,22 @@ $ProcessName = 'TaxIntelligenceStudio.Desktop'
 $Owner = 'jwgmpi-wolff'
 $Repo = 'TaxIntelligenceStudio'
 $RequiredSdkChannel = '9.0'
+
+# ---------------------------------------------------------------------------
+# Collector container
+#
+# The single local folder that every result from this script is written to:
+# the full install transcript and a machine-readable install result file.
+# Defaults to C:\temp\TaxIntelligenceStudio, is overridden by -ResultsPath, and
+# is exported as TAXINTELLIGENCESTUDIO_RESULTS so the installed application
+# collects its own results to the same place.
+# ---------------------------------------------------------------------------
+$CollectorContainer = if ($ResultsPath) {
+    [System.Environment]::ExpandEnvironmentVariables($ResultsPath)
+}
+else {
+    'C:\temp\TaxIntelligenceStudio'
+}
 
 function Write-Step {
     param([string]$Message)
@@ -418,31 +441,103 @@ $DesktopShortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) "$App
 $DataPath = Join-Path $env:LOCALAPPDATA 'TaxIntelligenceStudio'
 $InstalledExe = Join-Path $InstallPath $ExeName
 
+# --- Collector container ----------------------------------------------------
+#
+# Created before anything else so that even an early failure is collected.
+
+$CollectorLog = $null
+$CollectorResult = $null
+try {
+    New-Item -ItemType Directory -Path $CollectorContainer -Force | Out-Null
+    $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $action = if ($Uninstall) { 'uninstall' } else { 'install' }
+    $CollectorLog = Join-Path $CollectorContainer "$action-$stamp.log"
+    $CollectorResult = Join-Path $CollectorContainer "$action-result-$stamp.json"
+
+    # The installed application collects its own results to the same container.
+    $env:TAXINTELLIGENCESTUDIO_RESULTS = $CollectorContainer
+    [Environment]::SetEnvironmentVariable(
+        'TAXINTELLIGENCESTUDIO_RESULTS', $CollectorContainer, 'User')
+
+    Start-Transcript -Path $CollectorLog -Force | Out-Null
+}
+catch {
+    # Collecting results must never prevent an install.
+    Write-Warning "Could not open the collector container at ${CollectorContainer}: $($_.Exception.Message)"
+    $CollectorLog = $null
+}
+
+function Write-CollectedResult {
+    param([string]$Status, [string]$Message)
+
+    if (-not $CollectorResult) { return }
+
+    try {
+        [pscustomobject]@{
+            collected        = (Get-Date).ToString('o')
+            action           = if ($Uninstall) { 'uninstall' } else { 'install' }
+            status           = $Status
+            message          = $Message
+            computer         = $env:COMPUTERNAME
+            user             = "$env:USERDOMAIN\$env:USERNAME"
+            windows          = [System.Environment]::OSVersion.Version.ToString()
+            architecture     = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            runtime          = $Runtime
+            installPath      = $InstallPath
+            collectorContainer = $CollectorContainer
+            log              = $CollectorLog
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $CollectorResult -Encoding UTF8
+    }
+    catch {
+        Write-Warning "Could not write the install result: $($_.Exception.Message)"
+    }
+}
+
+function Stop-Collector {
+    if ($CollectorLog) {
+        try { Stop-Transcript | Out-Null } catch { }
+    }
+    if ($CollectorContainer) {
+        Write-Host ''
+        Write-Host "Results collected to: $CollectorContainer" -ForegroundColor Cyan
+    }
+}
+
 # --- Uninstall --------------------------------------------------------------
 
 if ($Uninstall) {
-    Write-Step "Uninstalling $AppName"
-    Assert-AppNotRunning
+    try {
+        Write-Step "Uninstalling $AppName"
+        Assert-AppNotRunning
 
-    foreach ($link in @($StartMenuShortcut, $DesktopShortcutPath)) {
-        if (Test-Path -LiteralPath $link) {
-            Remove-Item -LiteralPath $link -Force
-            Write-Detail "Removed shortcut: $link"
+        foreach ($link in @($StartMenuShortcut, $DesktopShortcutPath)) {
+            if (Test-Path -LiteralPath $link) {
+                Remove-Item -LiteralPath $link -Force
+                Write-Detail "Removed shortcut: $link"
+            }
         }
+
+        if (Test-Path -LiteralPath $InstallPath) {
+            Remove-Item -LiteralPath $InstallPath -Recurse -Force
+            Write-Detail "Removed install directory: $InstallPath"
+        }
+        else {
+            Write-Detail "No install directory at: $InstallPath"
+        }
+
+        Write-Host ''
+        Write-Host "$AppName has been uninstalled." -ForegroundColor Green
+        Write-Note "Local data at $DataPath was preserved."
+        Write-Note "A private SDK, if one was installed, remains at $(Join-Path $DataPath 'dotnet-sdk')."
+        Write-CollectedResult -Status 'succeeded' -Message "Uninstalled from $InstallPath."
+    }
+    catch {
+        Write-CollectedResult -Status 'failed' -Message $_.Exception.Message
+        Stop-Collector
+        throw
     }
 
-    if (Test-Path -LiteralPath $InstallPath) {
-        Remove-Item -LiteralPath $InstallPath -Recurse -Force
-        Write-Detail "Removed install directory: $InstallPath"
-    }
-    else {
-        Write-Detail "No install directory at: $InstallPath"
-    }
-
-    Write-Host ''
-    Write-Host "$AppName has been uninstalled." -ForegroundColor Green
-    Write-Note "Local data at $DataPath was preserved."
-    Write-Note "A private SDK, if one was installed, remains at $(Join-Path $DataPath 'dotnet-sdk')."
+    Stop-Collector
     return
 }
 
@@ -477,7 +572,9 @@ if ($WorkPath) {
     $workRoot = [System.Environment]::ExpandEnvironmentVariables($WorkPath)
 }
 else {
-    $workRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('tis-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+    # Inside the collector container so build artifacts and results live
+    # together, and short because MSBuild paths overflow MAX_PATH easily.
+    $workRoot = Join-Path $CollectorContainer ('build-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
 }
 
 if (Test-Path -LiteralPath $workRoot) {
@@ -594,6 +691,13 @@ try {
         New-AppShortcut -ShortcutPath $DesktopShortcutPath -TargetPath $InstalledExe
         Write-Detail "Desktop shortcut: $DesktopShortcutPath"
     }
+
+    Write-CollectedResult -Status 'succeeded' -Message "Installed $sizeMb MB to $InstallPath."
+}
+catch {
+    Write-CollectedResult -Status 'failed' -Message $_.Exception.Message
+    Stop-Collector
+    throw
 }
 finally {
     if (Test-Path -LiteralPath $workRoot) {
@@ -611,3 +715,5 @@ if ($Launch) {
     Write-Step 'Starting application'
     Start-Process -FilePath $InstalledExe -WorkingDirectory $InstallPath
 }
+
+Stop-Collector

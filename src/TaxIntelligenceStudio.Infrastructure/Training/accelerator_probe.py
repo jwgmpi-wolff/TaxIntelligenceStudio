@@ -1,6 +1,30 @@
 import json
+import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Collector container
+#
+# The single local folder that every result from this probe is written to.
+# Defaults to C:\temp\TaxIntelligenceStudio and is overridden by the host
+# application through TAXINTELLIGENCESTUDIO_RESULTS.
+# ---------------------------------------------------------------------------
+COLLECTOR_CONTAINER = Path(
+    os.environ.get("TAXINTELLIGENCESTUDIO_RESULTS")
+    or r"C:\temp\TaxIntelligenceStudio"
+)
+
+
+def collector_container():
+    """Return the collector container, creating it when possible."""
+    try:
+        COLLECTOR_CONTAINER.mkdir(parents=True, exist_ok=True)
+        return COLLECTOR_CONTAINER
+    except OSError:
+        # Collecting results must never break the probe itself.
+        return Path(tempfile.gettempdir())
 
 
 def test_gpu():
@@ -60,7 +84,7 @@ def test_npu():
         graph, opset_imports=[helper.make_opsetid("", 19)]
     )
     model.ir_version = 9
-    model_path = Path(tempfile.gettempdir()) / "tax-intelligence-npu-probe.onnx"
+    model_path = collector_container() / "tax-intelligence-npu-probe.onnx"
     onnx.save(model, model_path)
 
     ort.register_execution_provider_library(
@@ -128,17 +152,24 @@ def main():
     except Exception as exc:
         details.append(f"NPU test failed: {exc}")
 
-    print(
-        json.dumps(
-            {
-                "gpuVerified": gpu_verified,
-                "npuVerified": npu_verified,
-                "gpuDevice": gpu_device,
-                "npuProvider": npu_provider,
-                "details": " ".join(details),
-            }
-        )
-    )
+    payload = {
+        "gpuVerified": gpu_verified,
+        "npuVerified": npu_verified,
+        "gpuDevice": gpu_device,
+        "npuProvider": npu_provider,
+        "details": " ".join(details),
+    }
+
+    # Collect the raw probe result alongside the host application's result file.
+    try:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        result_path = collector_container() / f"accelerator-probe-{stamp}.json"
+        result_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        payload["resultPath"] = str(result_path)
+    except OSError:
+        pass
+
+    print(json.dumps(payload))
     raise SystemExit(0 if gpu_verified or npu_verified else 1)
 
 

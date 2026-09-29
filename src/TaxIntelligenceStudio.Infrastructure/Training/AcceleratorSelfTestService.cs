@@ -67,7 +67,7 @@ public sealed class AcceleratorSelfTestService : IAcceleratorSelfTestService
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidOperationException("Accelerator self-test returned invalid JSON.");
 
-        return new AcceleratorSelfTestResult(
+        var selfTestResult = new AcceleratorSelfTestResult(
             result.GpuVerified,
             result.NpuVerified,
             result.GpuDevice ?? "Unavailable",
@@ -75,6 +75,27 @@ public sealed class AcceleratorSelfTestService : IAcceleratorSelfTestService
             string.IsNullOrWhiteSpace(error) || (result.GpuVerified && result.NpuVerified)
                 ? result.Details ?? string.Empty
                 : $"{result.Details}{Environment.NewLine}{error.Replace("\0", string.Empty).Trim()}");
+
+        // Collect the result so it survives the window being closed and can be
+        // retrieved from a remote machine in one place.
+        var collected = await ResultsCollector.WriteJsonAsync(
+            new
+            {
+                Collected = DateTimeOffset.Now,
+                Machine = Environment.MachineName,
+                Python = python,
+                Architecture = TrainingPlatform.Describe(TrainingPlatform.CurrentArchitecture),
+                Result = selfTestResult
+            },
+            "accelerator-self-test",
+            cancellationToken: cancellationToken);
+
+        return collected is null
+            ? selfTestResult
+            : selfTestResult with
+            {
+                Details = $"{selfTestResult.Details} Result collected to {collected}."
+            };
     }
 
     private static async Task ExtractProbeAsync(

@@ -237,7 +237,8 @@ This removes the application and its shortcuts. Local data in
 | --- | --- |
 | `-Token` | GitHub token. Overrides all other credential sources. |
 | `-InstallPath` | Install directory. Defaults to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio`. |
-| `-WorkPath` | Temporary build directory. Use a short path such as `C:\tis` if the default exceeds the Windows 260 character path limit. |
+| `-WorkPath` | Temporary build directory. Defaults to a short folder inside the collector container. Use a short path such as `C:\tis` if the default exceeds the Windows 260 character path limit. |
+| `-ResultsPath` | Collector container for the install log and install result. Defaults to `C:\temp\TaxIntelligenceStudio`. |
 | `-Runtime` | `win-x64` or `win-arm64`. Detected automatically when omitted. |
 | `-Reference` | Branch, tag, or commit to install from. Defaults to `main`. |
 | `-FromSource` | Always build from source, ignoring prebuilt releases. |
@@ -377,6 +378,7 @@ Uninstall removes the installed application and its shortcuts. Local data under
 | `-NoShortcut` | Skip creating the Start Menu shortcut. |
 | `-DesktopShortcut` | Also create a Desktop shortcut. |
 | `-RunTests` | Run the unit tests before publishing and abort on failure. |
+| `-ResultsPath` | Collector container for the deployment log and deployment result. Defaults to `C:\temp\TaxIntelligenceStudio` on both machines. |
 | `-Uninstall` | Remove the application and shortcuts from the destination. |
 
 Full help is available with `Get-Help .\scripts\Deploy-Windows.ps1 -Full`.
@@ -514,6 +516,78 @@ Use **Run real accelerator self-test** to execute two measured workloads:
   profiling used to confirm that at least one node actually ran on the Hexagon
   NPU rather than silently falling back to CPU.
 
+## Results collector container
+
+Every result this repository produces is collected into one labelled local
+folder, the **collector container**:
+
+```
+C:\temp\TaxIntelligenceStudio
+```
+
+Nothing is scattered across per-user temp folders any more. What lands there:
+
+| File | Written by |
+| --- | --- |
+| `accelerator-self-test-*.json` | The application's accelerator self-test |
+| `accelerator-probe-*.json` | The Python accelerator probe (raw result) |
+| `install-*.log`, `install-result-*.json` | `scripts\Install.ps1` |
+| `uninstall-*.log`, `uninstall-result-*.json` | `scripts\Install.ps1 -Uninstall` |
+| `deploy-*.log`, `deploy-result-*.json` | `scripts\Deploy-Windows.ps1` |
+| `azure-retail-prices-*.log`, `azure-retail-prices-result-*.json` | `scripts\Get-AzureRetailPrices.ps1` |
+
+Redirect the container with the `TAXINTELLIGENCESTUDIO_RESULTS` environment
+variable, or with `-ResultsPath` on any of the scripts:
+
+```powershell
+$env:TAXINTELLIGENCESTUDIO_RESULTS = 'D:\collected'
+.\scripts\Install.ps1 -ResultsPath 'D:\collected'
+```
+
+`Install.ps1` and `Deploy-Windows.ps1` also set `TAXINTELLIGENCESTUDIO_RESULTS`
+on the target machine, so the installed application collects its own results to
+the same container without further configuration.
+
+Collecting a result never fails the operation that produced it. If the container
+cannot be created — a locked-down machine, or a non-admin user with no access to
+`C:\temp` — the work still completes and results fall back to the temp folder.
+
+Deployments collect on both sides: the build machine keeps the deployment log
+and result, and the destination gets its own container. Retrieve a remote one
+with:
+
+```powershell
+$session = New-PSSession -ComputerName TAX-WS01
+Copy-Item -FromSession $session -Path 'C:\temp\TaxIntelligenceStudio\*' `
+  -Destination 'C:\temp\TaxIntelligenceStudio\TAX-WS01' -Recurse
+```
+
+### Azure retail price export
+
+`scripts\Get-AzureRetailPrices.ps1` queries the public Azure Retail Prices API —
+no credential and no Azure subscription required — and writes a CSV to
+`C:\temp\azure_retail_prices.csv`:
+
+```powershell
+.\scripts\Get-AzureRetailPrices.ps1 -ServiceName 'Virtual Machines' -ArmRegionName 'eastus'
+```
+
+The run log and a run result recording the filter, record count, and CSV path
+are collected to the container. Narrow broad queries with `-Filter`,
+`-ServiceName`, `-ArmRegionName`, `-PriceType`, or `-MaxRecords`; an unfiltered
+export retrieves every meter Azure publishes and takes a long time.
+
+| Parameter | Description |
+| --- | --- |
+| `-Filter` | Raw OData filter, for example `"serviceName eq 'Azure OpenAI'"`. Takes precedence over the convenience parameters. |
+| `-ServiceName` | Restrict to one service. |
+| `-ArmRegionName` | Restrict to one region, for example `eastus`. |
+| `-PriceType` | `Consumption`, `Reservation`, or `DevTestConsumption`. |
+| `-CurrencyCode` | Currency for returned prices. Defaults to `USD`. |
+| `-MaxRecords` | Stop after this many rows. `0` (default) retrieves everything matched. |
+| `-OutputPath` | CSV file to write. Defaults to `C:\temp\azure_retail_prices.csv`. |
+| `-ResultsPath` | Collector container. Defaults to `C:\temp\TaxIntelligenceStudio`. |
+
 ## Local data locations
 
 - Application database: `%LOCALAPPDATA%\TaxIntelligenceStudio\tax-intelligence.db`
@@ -521,6 +595,7 @@ Use **Run real accelerator self-test** to execute two measured workloads:
 - Active agent selection:
   `%LOCALAPPDATA%\TaxIntelligenceStudio\active-agent-model.json`
 - Hugging Face cache: `%USERPROFILE%\.cache\huggingface\hub`
+- Results collector container: `C:\temp\TaxIntelligenceStudio`
 
 Imported financial document contents are not persisted by the import workflow.
 The SQLite database stores the IRS corpus and audit records described above.

@@ -67,6 +67,12 @@
     Remove the installed application and its shortcuts from the destination,
     then exit. No build is performed.
 
+.PARAMETER ResultsPath
+    Collector container: the single folder on this machine that receives the
+    deployment log and the deployment result file. The destination machine gets
+    its own collector container at the same path. Defaults to
+    C:\temp\TaxIntelligenceStudio.
+
 .EXAMPLE
     .\scripts\Deploy-Windows.ps1 -ComputerName TAX-WS01
 
@@ -108,6 +114,8 @@ param(
 
     [string]$InstallPath,
 
+    [string]$ResultsPath,
+
     [switch]$FrameworkDependent,
     [switch]$NoShortcut,
     [switch]$DesktopShortcut,
@@ -121,6 +129,25 @@ $ErrorActionPreference = 'Stop'
 $AppName = 'Tax Intelligence Studio'
 $ExeName = 'TaxIntelligenceStudio.Desktop.exe'
 $ProcessName = 'TaxIntelligenceStudio.Desktop'
+
+# ---------------------------------------------------------------------------
+# Collector container
+#
+# The single folder that every result from this deployment is written to: the
+# full deployment transcript and a machine-readable deployment result file.
+# Defaults to C:\temp\TaxIntelligenceStudio and is overridden by -ResultsPath.
+#
+# The same path is used on both sides. This script collects to the container on
+# the machine it runs from; the destination gets its own container at the same
+# path, exported as TAXINTELLIGENCESTUDIO_RESULTS so the deployed application
+# collects its accelerator self-test results there too.
+# ---------------------------------------------------------------------------
+$CollectorContainer = if ($ResultsPath) {
+    [System.Environment]::ExpandEnvironmentVariables($ResultsPath)
+}
+else {
+    'C:\temp\TaxIntelligenceStudio'
+}
 
 function Write-Step {
     param([string]$Message)
@@ -286,11 +313,87 @@ $RemoveInstall = {
     }
 }
 
+# --- Collector container ----------------------------------------------------
+#
+# Opened before any work so that even an early failure is collected.
+
+$CollectorLog = $null
+$CollectorResult = $null
+$CollectorAction = if ($Uninstall) { 'uninstall' } else { 'deploy' }
+try {
+    New-Item -ItemType Directory -Path $CollectorContainer -Force | Out-Null
+    $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $CollectorLog = Join-Path $CollectorContainer "$CollectorAction-$stamp.log"
+    $CollectorResult = Join-Path $CollectorContainer "$CollectorAction-result-$stamp.json"
+    Start-Transcript -Path $CollectorLog -Force | Out-Null
+}
+catch {
+    # Collecting results must never prevent a deployment.
+    Write-Warning "Could not open the collector container at ${CollectorContainer}: $($_.Exception.Message)"
+    $CollectorLog = $null
+}
+
+# Creates the collector container on the destination and points the deployed
+# application at it, so accelerator self-test results land in the same folder.
+$InitializeDestinationCollector = {
+    param([string]$Container)
+
+    try {
+        New-Item -ItemType Directory -Path $Container -Force | Out-Null
+        [Environment]::SetEnvironmentVariable('TAXINTELLIGENCESTUDIO_RESULTS', $Container, 'Machine')
+        return [pscustomobject]@{ Container = $Container; Ready = $true; Error = $null }
+    }
+    catch {
+        try {
+            [Environment]::SetEnvironmentVariable('TAXINTELLIGENCESTUDIO_RESULTS', $Container, 'User')
+        }
+        catch { }
+        return [pscustomobject]@{ Container = $Container; Ready = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Write-CollectedResult {
+    param([string]$Status, [string]$Message, [object]$Destination)
+
+    if (-not $CollectorResult) { return }
+
+    try {
+        [pscustomobject]@{
+            collected          = (Get-Date).ToString('o')
+            action             = $CollectorAction
+            status             = $Status
+            message            = $Message
+            buildMachine       = $env:COMPUTERNAME
+            buildUser          = "$env:USERDOMAIN\$env:USERNAME"
+            destination        = if ($Destination) { $Destination.ComputerName } else { $destinationLabel }
+            destinationOS      = if ($Destination) { "$($Destination.OSCaption) ($($Destination.OSVersion), $($Destination.OSArchitecture))" } else { $null }
+            installPath        = if ($Destination) { $Destination.InstallPath } else { $InstallPath }
+            runtime            = $Runtime
+            configuration      = $Configuration
+            remote             = $isRemote
+            collectorContainer = $CollectorContainer
+            log                = $CollectorLog
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $CollectorResult -Encoding UTF8
+    }
+    catch {
+        Write-Warning "Could not write the deployment result: $($_.Exception.Message)"
+    }
+}
+
+function Stop-Collector {
+    if ($CollectorLog) {
+        try { Stop-Transcript | Out-Null } catch { }
+    }
+    Write-Host ''
+    Write-Host "Results collected to: $CollectorContainer" -ForegroundColor Cyan
+}
+
 # --- Deployment -------------------------------------------------------------
 
 try {
     Write-Step "$(if ($Uninstall) { 'Uninstalling' } else { 'Deploying' }) $AppName"
     Write-Detail "Destination: $destinationLabel"
+    Write-Detail "Collector container: $CollectorContainer"
 
     if ($isRemote) {
         Write-Step "Connecting to $ComputerName"
@@ -323,6 +426,15 @@ try {
     Write-Detail "Destination OS: $($destination.OSCaption) ($($destination.OSVersion), $($destination.OSArchitecture))"
     Write-Detail "Install path: $($destination.InstallPath)"
 
+    $destinationCollector = Invoke-OnDestination -ScriptBlock $InitializeDestinationCollector `
+        -ArgumentList @($CollectorContainer)
+    if ($destinationCollector.Ready) {
+        Write-Detail "Destination collector container: $($destinationCollector.Container)"
+    }
+    else {
+        Write-Note "Destination collector container unavailable ($($destinationCollector.Error)). Application results will fall back to the destination temp folder."
+    }
+
     if ([Version]$destination.OSVersion -lt [Version]'10.0') {
         throw "Windows 10 or later is required on the destination, but '$($destination.OSVersion)' was reported."
     }
@@ -350,6 +462,7 @@ try {
         Write-Host ''
         Write-Host "$AppName removed from $($destination.ComputerName)." -ForegroundColor Green
         Write-Note "Local data at $($destination.DataPath) was preserved."
+        Write-CollectedResult -Status 'succeeded' -Message "Removed from $($destination.InstallPath)." -Destination $destination
         return
     }
 
@@ -413,8 +526,10 @@ try {
     }
 
     # Publish to a staging folder first so a failed build never leaves a
-    # partially overwritten installation on the destination.
-    $stagingPath = Join-Path ([System.IO.Path]::GetTempPath()) ('TaxIntelligenceStudio-publish-' + [Guid]::NewGuid().ToString('N'))
+    # partially overwritten installation on the destination. Staging lives
+    # inside the collector container unless that container is unavailable.
+    $stagingRoot = if ($CollectorLog) { $CollectorContainer } else { [System.IO.Path]::GetTempPath() }
+    $stagingPath = Join-Path $stagingRoot ('publish-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 
     try {
         Write-Step 'Publishing desktop application'
@@ -484,6 +599,7 @@ try {
         Write-Host "$AppName deployed to $($destination.ComputerName)." -ForegroundColor Green
         Write-Host "  Launch: $($installResult.ExePath)"
         Write-Host "  Data:   $($destination.DataPath)"
+        Write-Host "  Results: $CollectorContainer (collector container)"
         if ($isRemote) {
             Write-Host "  Remove: .\scripts\Deploy-Windows.ps1 -ComputerName $ComputerName -Uninstall"
         }
@@ -494,7 +610,12 @@ try {
         if ($isRemote) {
             Write-Host ''
             Write-Note 'Sign in to the destination interactively to start the application. A WinRM session has no desktop, so the GUI cannot be launched from here.'
+            Write-Note "Destination results are collected to $CollectorContainer on $($destination.ComputerName). Retrieve them with: Copy-Item -FromSession (New-PSSession -ComputerName $($destination.ComputerName)) -Path '$CollectorContainer\*' -Destination '$CollectorContainer' -Recurse"
         }
+
+        Write-CollectedResult -Status 'succeeded' `
+            -Message "Deployed $($installResult.SizeMb) MB to $($destination.InstallPath)." `
+            -Destination $destination
     }
     finally {
         if (Test-Path -LiteralPath $stagingPath) {
@@ -502,8 +623,13 @@ try {
         }
     }
 }
+catch {
+    Write-CollectedResult -Status 'failed' -Message $_.Exception.Message -Destination $null
+    throw
+}
 finally {
     if ($script:Session) {
         Remove-PSSession -Session $script:Session -ErrorAction SilentlyContinue
     }
+    Stop-Collector
 }
