@@ -25,6 +25,11 @@
     installed under %LOCALAPPDATA% for the current user only. No administrator
     rights and no machine-wide change are required.
 
+    Unless -SkipTrainingEnvironment is specified, the installer also verifies
+    or provisions a private x64 Python 3.11 environment with the complete pinned
+    PyTorch DirectML, PEFT, Transformers, Datasets, and Accelerate stack used by
+    Model Trainer. This environment works under emulation on Windows on Arm.
+
     Platform differences are detected at run time and adjusted for: native CPU
     architecture (x64, x86, Arm64, including x64 emulation on Arm64), Windows
     PowerShell 5.1 or PowerShell 7, the Windows long-path setting, the system
@@ -77,6 +82,10 @@
 .PARAMETER Launch
     Start the application after installation.
 
+.PARAMETER SkipTrainingEnvironment
+    Install only the desktop application. Do not verify, install, or update the
+    private Python DirectML/LoRA training environment.
+
 .PARAMETER Uninstall
     Remove the installed application and its shortcuts, then exit. Nothing is
     downloaded and no credential is needed.
@@ -109,6 +118,7 @@ param(
     [switch]$NoShortcut,
     [switch]$DesktopShortcut,
     [switch]$Launch,
+    [switch]$SkipTrainingEnvironment,
     [switch]$Uninstall
 )
 
@@ -122,6 +132,16 @@ $ProcessName = 'TaxIntelligenceStudio.Desktop'
 $Owner = 'jwgmpi-wolff'
 $Repo = 'TaxIntelligenceStudio'
 $RequiredSdkChannel = '9.0'
+$TrainingPythonVersion = '3.11.9'
+$TrainingPackages = @(
+    'torch==2.4.1',
+    'torchvision==0.19.1',
+    'torch-directml==0.2.5.dev240914',
+    'transformers==4.46.3',
+    'datasets==3.1.0',
+    'accelerate==1.1.1',
+    'peft==0.13.2'
+)
 
 # ---------------------------------------------------------------------------
 # Collector container
@@ -554,6 +574,163 @@ function Assert-AppNotRunning {
     }
 }
 
+function Find-CompatibleTrainingPython {
+    param([Parameter(Mandatory)][string]$DestinationDataPath)
+
+    $command = Get-Command python -ErrorAction SilentlyContinue
+    $candidates = @(
+        (Join-Path $DestinationDataPath 'python311-x64\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python311\python.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python310\python.exe'),
+        (Join-Path $env:ProgramFiles 'Python312\python.exe'),
+        (Join-Path $env:ProgramFiles 'Python311\python.exe'),
+        (Join-Path $env:ProgramFiles 'Python310\python.exe'),
+        $(if ($command) { $command.Source })
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $details = @(& $candidate -c "import platform,sys; print(platform.machine()); print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+
+        if ($exitCode -ne 0 -or $details.Count -lt 2) {
+            continue
+        }
+
+        try {
+            $version = [Version]$details[1].ToString().Trim()
+        }
+        catch {
+            continue
+        }
+
+        $architecture = $details[0].ToString().Trim()
+        if ($architecture -in @('AMD64', 'x86_64') -and
+            $version -ge [Version]'3.10' -and
+            $version -lt [Version]'3.13') {
+            return [pscustomobject]@{
+                Path         = $candidate
+                Architecture = $architecture
+                Version      = $version
+            }
+        }
+    }
+
+    return $null
+}
+
+function Install-TrainingEnvironment {
+    param([Parameter(Mandatory)][string]$DestinationDataPath)
+
+    $pythonRoot = Join-Path $DestinationDataPath 'python311-x64'
+    $environmentPath = Join-Path $DestinationDataPath '.venv-training'
+    $environmentPython = Join-Path $environmentPath 'Scripts\python.exe'
+    $probe = 'import torch,torch_directml,torchvision,transformers,datasets,accelerate,peft'
+
+    if (Test-Path -LiteralPath $environmentPython) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $null = & $environmentPython -c $probe 2>&1
+            $probeExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+
+        if ($probeExitCode -eq 0) {
+            Write-Detail "Training environment already compatible: $environmentPath"
+            return $environmentPython
+        }
+
+        Write-Note 'The existing training environment is incompatible and will be rebuilt.'
+    }
+
+    New-Item -ItemType Directory -Path $DestinationDataPath -Force | Out-Null
+
+    $bootstrap = Find-CompatibleTrainingPython -DestinationDataPath $DestinationDataPath
+    if (-not $bootstrap) {
+        $installerName = "python-$TrainingPythonVersion-amd64.exe"
+        $installerPath = Join-Path ([System.IO.Path]::GetTempPath()) $installerName
+        $installerUri = "https://www.python.org/ftp/python/$TrainingPythonVersion/$installerName"
+
+        Write-Detail "Downloading private x64 Python $TrainingPythonVersion from python.org"
+        try {
+            Invoke-WebRequest -Uri $installerUri -OutFile $installerPath -UseBasicParsing
+            $installer = Start-Process -FilePath $installerPath -ArgumentList @(
+                '/quiet',
+                'InstallAllUsers=0',
+                "TargetDir=`"$pythonRoot`"",
+                'Include_core=1',
+                'Include_exe=1',
+                'Include_lib=1',
+                'Include_pip=1',
+                'Include_launcher=0',
+                'Include_test=0',
+                'Include_tools=0',
+                'AssociateFiles=0',
+                'Shortcuts=0',
+                'PrependPath=0',
+                'CompileAll=0'
+            ) -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+                throw "Python installer exited with code $($installer.ExitCode)."
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+        }
+
+        $bootstrap = Find-CompatibleTrainingPython -DestinationDataPath $DestinationDataPath
+    }
+
+    if (-not $bootstrap) {
+        throw "Python $TrainingPythonVersion installation completed, but no compatible x64 Python 3.10-3.12 interpreter could be found."
+    }
+
+    Write-Detail "Training bootstrap: $($bootstrap.Path) (Python $($bootstrap.Version), $($bootstrap.Architecture))"
+    Write-Detail "Creating private training environment: $environmentPath"
+    $venvOutput = @(& $bootstrap.Path -m venv --clear $environmentPath 2>&1)
+    $venvExitCode = $LASTEXITCODE
+    if ($venvExitCode -ne 0 -or -not (Test-Path -LiteralPath $environmentPython)) {
+        throw "Could not create the training environment at '$environmentPath'. $($venvOutput -join ' ')"
+    }
+
+    $pipOutput = @(& $environmentPython -m pip install --disable-pip-version-check --upgrade pip 2>&1)
+    $pipExitCode = $LASTEXITCODE
+    if ($pipExitCode -ne 0) {
+        throw "Could not update pip in the training environment. $($pipOutput -join ' ')"
+    }
+
+    Write-Detail "Installing pinned training components: $($TrainingPackages -join ', ')"
+    $packageOutput = @(& $environmentPython -m pip install --disable-pip-version-check --upgrade @TrainingPackages 2>&1)
+    $packageExitCode = $LASTEXITCODE
+    if ($packageExitCode -ne 0) {
+        throw "Could not install the DirectML/LoRA training packages. $($packageOutput -join ' ')"
+    }
+
+    $probeOutput = @(& $environmentPython -c $probe 2>&1)
+    $probeExitCode = $LASTEXITCODE
+    if ($probeExitCode -ne 0) {
+        throw "The training environment was installed, but its required imports failed. $($probeOutput -join ' ')"
+    }
+
+    Write-Detail "Training environment ready: $environmentPath ($($bootstrap.Architecture))"
+    return $environmentPython
+}
+
 # --- Paths ------------------------------------------------------------------
 
 $IsElevated = $false
@@ -812,6 +989,15 @@ try {
 
     if (-not (Test-Path -LiteralPath (Join-Path $payloadPath $ExeName))) {
         throw "The prepared payload does not contain '$ExeName'."
+    }
+
+    if (-not $SkipTrainingEnvironment) {
+        Write-Step 'Preparing the DirectML/LoRA training environment'
+        $trainingPython = Install-TrainingEnvironment -DestinationDataPath $DataPath
+        Write-Detail "Training Python: $trainingPython"
+    }
+    else {
+        Write-Note 'Skipped the private Python training environment.'
     }
 
     Write-Step 'Installing'

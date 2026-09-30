@@ -10,9 +10,9 @@
    folder.
 
 The installer builds and installs the application for the current Windows user,
-creates Start Menu and Desktop shortcuts, provisions model-training components
-when needed, and launches the application. Administrator rights are not
-required.
+creates Start Menu and Desktop shortcuts, installs the complete private
+Python/DirectML model-training environment, and launches the application.
+Administrator rights are not required.
 
 > **Important:** Download and extract the complete ZIP. `Install-Local.cmd` uses the
 > accompanying `scripts\Install.ps1` file and cannot install correctly if it is
@@ -199,8 +199,8 @@ builds the app from that copy, installs it for the current user, adds Start
 Menu and Desktop shortcuts, and starts it. No GitHub token and no
 administrator rights are needed. Local model training additionally requires
 the Python environment described in [Local model training](#local-model-training);
-`scripts\Deploy-Windows.ps1` provisions it automatically, and the application
-repairs or creates it when a model operation first needs it.
+both installation scripts provision it automatically, and the application
+repairs it if a later model operation detects a problem.
 
 To remove it, double-click **`Uninstall.cmd`**. Your data in
 `%LOCALAPPDATA%\TaxIntelligenceStudio` is kept.
@@ -254,7 +254,11 @@ The installer:
    `%LOCALAPPDATA%\TaxIntelligenceStudio\dotnet-sdk` if the machine has no
    suitable SDK. The private SDK is never added to `PATH` and does not affect
    other tooling on the machine.
-5. Installs to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio` and creates a
+5. Verifies or installs private x64 Python 3.11 and the complete pinned
+   DirectML/LoRA stack under
+   `%LOCALAPPDATA%\TaxIntelligenceStudio\.venv-training`. This also works under
+   x64 emulation on Windows on Arm.
+6. Installs to `%LOCALAPPDATA%\Programs\TaxIntelligenceStudio` and creates a
    Start Menu shortcut.
 
 The target architecture (`win-x64` or `win-arm64`) is detected automatically.
@@ -294,6 +298,7 @@ This removes the application and its shortcuts. Local data in
 | `-FromSource` | Always build from source, ignoring prebuilt releases. |
 | `-FromGitHub` | Download from GitHub even when run from a local repository copy. |
 | `-DesktopShortcut` | Also create a Desktop shortcut. |
+| `-SkipTrainingEnvironment` | Skip verification and installation of the private Python DirectML/LoRA environment. |
 | `-Uninstall` | Remove the application. |
 
 ### Publishing prebuilt releases
@@ -493,15 +498,15 @@ current directory is not the repository root. `cd` into the clone first, or use
 
 ## Local model training
 
-`scripts\Deploy-Windows.ps1` installs a private x64 Python 3.11 environment at
-`%LOCALAPPDATA%\TaxIntelligenceStudio\.venv-training` by default. The Model
-Trainer discovers and validates that environment automatically. If it is
-missing or incompatible, the application inspects installed Python runtimes,
-uses a compatible x64 Python 3.10-3.12 when available, or downloads a private
-x64 Python 3.11.9 from python.org. It then creates or updates the private
-environment and verifies it before training, accelerator self-test, or local
-agent-model activation. This happens only when a model operation needs the
-environment, not at every application startup.
+`scripts\Install.ps1` and `scripts\Deploy-Windows.ps1` install a private x64
+Python 3.11 environment at
+`%LOCALAPPDATA%\TaxIntelligenceStudio\.venv-training` by default. They use a
+compatible x64 Python 3.10-3.12 bootstrap when available or download private
+x64 Python 3.11.9 from python.org, then install and verify every pinned training
+component before completing installation. The Model Trainer discovers and
+validates that environment automatically. If it later becomes missing or
+incompatible, the application repairs it before training, accelerator
+self-test, or local agent-model activation.
 
 The private environment includes all tested DirectML/LoRA components:
 
