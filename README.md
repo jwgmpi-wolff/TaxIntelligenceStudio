@@ -1,5 +1,23 @@
 # Tax Intelligence Studio
 
+## One-click Windows install
+
+[![Download Tax Intelligence Studio](https://img.shields.io/badge/Download-Windows%20installer-0078D4?style=for-the-badge&logo=windows)](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip)
+
+1. [Download the complete repository ZIP](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip).
+2. Extract the ZIP.
+3. Double-click **[`Install.cmd`](./Install.cmd)** in the extracted top-level
+   folder.
+
+The installer builds and installs the application for the current Windows user,
+creates Start Menu and Desktop shortcuts, provisions model-training components
+when needed, and launches the application. Administrator rights are not
+required.
+
+> **Important:** Download and extract the complete ZIP. `Install.cmd` uses the
+> accompanying `scripts\Install.ps1` file and cannot install correctly if it is
+> downloaded by itself.
+
 Image-only PDFs are rendered and OCR'd entirely on-device with Windows OCR. Recognized
 W-2, 1099, 1098, SSA-1099, HSA, K-1, and property-tax fields retain their form,
 box, and source-page provenance. Unsupported or ambiguous scans are sent to review
