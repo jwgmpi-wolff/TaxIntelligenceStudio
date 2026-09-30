@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -13,6 +14,8 @@ public sealed class LocalModelTrainingService(
 {
     private const string EmbeddedTrainerName =
         "TaxIntelligenceStudio.Infrastructure.Training.local_lora_trainer.py";
+    private static readonly SemaphoreSlim EnvironmentInstallLock = new(1, 1);
+    private static readonly HttpClient DownloadClient = new();
 
     public IReadOnlyCollection<ModelTrainingCheckpoint> GetCheckpoints(string outputDirectory)
     {
@@ -312,6 +315,32 @@ public sealed class LocalModelTrainingService(
             failures.Add($"{candidate}: {probe.Message}");
         }
 
+        progress?.Report(
+            "No compatible training environment was found. Inspecting this machine and repairing the private environment...");
+        try
+        {
+            var repairedPython = await EnsureTrainingEnvironmentAsync(
+                configuredPython,
+                accelerator,
+                progress,
+                cancellationToken);
+            var repairedProbe = await ProbePythonAsync(
+                repairedPython,
+                accelerator,
+                cancellationToken);
+            if (repairedProbe.Succeeded)
+            {
+                progress?.Report($"Using repaired Python environment: {repairedPython}");
+                return repairedPython;
+            }
+
+            failures.Add($"{repairedPython}: {repairedProbe.Message}");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            failures.Add($"automatic environment setup: {exception.Message}");
+        }
+
         var host = TrainingPlatform.CurrentArchitecture;
         var install =
             $" Install: {TrainingPlatform.InstallCommand(accelerator == AcceleratorKind.DirectMlGpu)}";
@@ -346,6 +375,339 @@ public sealed class LocalModelTrainingService(
         throw new InvalidOperationException(
             $"No compatible local Python training environment was found. " +
             $"{string.Join(" | ", failures)}{install}");
+    }
+
+    private static async Task<string> EnsureTrainingEnvironmentAsync(
+        string configuredPython,
+        AcceleratorKind accelerator,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        await EnvironmentInstallLock.WaitAsync(cancellationToken);
+        try
+        {
+            var dataPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "TaxIntelligenceStudio");
+            var environmentPath = Path.Combine(dataPath, ".venv-training");
+            var environmentPython = Path.Combine(environmentPath, "Scripts", "python.exe");
+
+            var bootstrapPython = await FindBootstrapPythonAsync(
+                configuredPython,
+                environmentPython,
+                cancellationToken);
+            if (bootstrapPython is null)
+            {
+                progress?.Report(
+                    $"No compatible x64 Python was found. Downloading private Python {TrainingPlatform.TrainingPythonVersion}...");
+                bootstrapPython = await InstallPrivatePythonAsync(
+                    dataPath,
+                    progress,
+                    cancellationToken);
+            }
+            else
+            {
+                progress?.Report($"Using {bootstrapPython} to build the private training environment.");
+            }
+
+            Directory.CreateDirectory(dataPath);
+            await RunPythonAsync(
+                bootstrapPython,
+                ["-m", "venv", "--clear", environmentPath],
+                "create the private training environment",
+                progress,
+                cancellationToken);
+            await RunPythonAsync(
+                environmentPython,
+                ["-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip"],
+                "update pip",
+                progress,
+                cancellationToken);
+
+            var packages = TrainingPlatform.Packages(
+                accelerator == AcceleratorKind.DirectMlGpu);
+            progress?.Report(
+                $"Installing required training components: {string.Join(", ", packages)}");
+            await RunPythonAsync(
+                environmentPython,
+                [
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--upgrade",
+                    .. packages
+                ],
+                "install the model-training components",
+                progress,
+                cancellationToken);
+            return environmentPython;
+        }
+        finally
+        {
+            EnvironmentInstallLock.Release();
+        }
+    }
+
+    private static async Task<string?> FindBootstrapPythonAsync(
+        string configuredPython,
+        string environmentPython,
+        CancellationToken cancellationToken)
+    {
+        var localPrograms = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var candidates = new[]
+        {
+            configuredPython,
+            Path.Combine(localPrograms, "TaxIntelligenceStudio", "python311-x64", "python.exe"),
+            Path.Combine(localPrograms, "Programs", "Python", "Python312", "python.exe"),
+            Path.Combine(localPrograms, "Programs", "Python", "Python311", "python.exe"),
+            Path.Combine(localPrograms, "Programs", "Python", "Python310", "python.exe"),
+            Path.Combine(programFiles, "Python312", "python.exe"),
+            Path.Combine(programFiles, "Python311", "python.exe"),
+            Path.Combine(programFiles, "Python310", "python.exe"),
+            "python"
+        };
+
+        foreach (var candidate in candidates
+                     .Where(candidate =>
+                         !string.Equals(candidate, environmentPython, StringComparison.OrdinalIgnoreCase))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (Path.IsPathFullyQualified(candidate) && !File.Exists(candidate))
+            {
+                continue;
+            }
+
+            if (await IsCompatibleBootstrapPythonAsync(candidate, cancellationToken))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<bool> IsCompatibleBootstrapPythonAsync(
+        string pythonExecutable,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = pythonExecutable,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-c");
+            process.StartInfo.ArgumentList.Add(
+                "import platform,sys; print(platform.machine()); print(f'{sys.version_info.major}.{sys.version_info.minor}')");
+            if (!process.Start())
+            {
+                return false;
+            }
+
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+            if (process.ExitCode != 0)
+            {
+                return false;
+            }
+
+            var lines = output.Split(
+                ['\r', '\n'],
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return lines.Length >= 2 &&
+                   ParseMachine(lines[0]) == Architecture.X64 &&
+                   Version.TryParse(lines[1], out var version) &&
+                   version >= new Version(3, 10) &&
+                   version < new Version(3, 13);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<string> InstallPrivatePythonAsync(
+        string dataPath,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var pythonRoot = Path.Combine(dataPath, "python311-x64");
+        var pythonExecutable = Path.Combine(pythonRoot, "python.exe");
+        var version = TrainingPlatform.TrainingPythonVersion;
+        var installerName = $"python-{version}-amd64.exe";
+        var installerPath = Path.Combine(Path.GetTempPath(), installerName);
+        var installerUri = new Uri(
+            $"https://www.python.org/ftp/python/{version}/{installerName}");
+
+        Directory.CreateDirectory(dataPath);
+        try
+        {
+            await using (var destination = new FileStream(
+                             installerPath,
+                             FileMode.Create,
+                             FileAccess.Write,
+                             FileShare.None,
+                             81920,
+                             useAsync: true))
+            await using (var source = await DownloadClient.GetStreamAsync(
+                             installerUri,
+                             cancellationToken))
+            {
+                await source.CopyToAsync(destination, cancellationToken);
+            }
+
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = installerPath,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            foreach (var argument in new[]
+                     {
+                         "/quiet",
+                         "InstallAllUsers=0",
+                         $"TargetDir={pythonRoot}",
+                         "Include_core=1",
+                         "Include_exe=1",
+                         "Include_lib=1",
+                         "Include_pip=1",
+                         "Include_launcher=0",
+                         "Include_test=0",
+                         "Include_tools=0",
+                         "AssociateFiles=0",
+                         "Shortcuts=0",
+                         "PrependPath=0",
+                         "CompileAll=0"
+                     })
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            if (!process.Start())
+            {
+                throw new InvalidOperationException("The private Python installer could not be started.");
+            }
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKill(process);
+                throw;
+            }
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"The private Python installer exited with code {process.ExitCode}.");
+            }
+        }
+        finally
+        {
+            File.Delete(installerPath);
+        }
+
+        if (!File.Exists(pythonExecutable))
+        {
+            throw new InvalidOperationException(
+                $"Python installation completed without producing '{pythonExecutable}'.");
+        }
+
+        progress?.Report($"Installed private x64 Python {version} at {pythonRoot}.");
+        return pythonExecutable;
+    }
+
+    private static async Task RunPythonAsync(
+        string pythonExecutable,
+        IReadOnlyList<string> arguments,
+        string operation,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = pythonExecutable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+        foreach (var argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Could not {operation}.");
+        }
+
+        var outputTask = RelayOutputAsync(process.StandardOutput, progress, cancellationToken);
+        var errorTask = RelayOutputAsync(process.StandardError, progress, cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKill(process);
+            throw;
+        }
+        var output = await outputTask;
+        var error = await errorTask;
+        if (process.ExitCode != 0)
+        {
+            var detail = string.Join(
+                Environment.NewLine,
+                new[] { output, error }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            throw new InvalidOperationException(
+                $"Could not {operation} (exit code {process.ExitCode}). {detail}".Trim());
+        }
+    }
+
+    private static async Task<string> RelayOutputAsync(
+        StreamReader reader,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        var output = new StringBuilder();
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            output.AppendLine(line);
+            progress?.Report(line);
+        }
+
+        return output.ToString().Trim();
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     /// <summary>

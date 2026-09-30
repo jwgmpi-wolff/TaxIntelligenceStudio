@@ -32,6 +32,28 @@ namespace TaxIntelligenceStudio.Infrastructure.Training;
 /// </remarks>
 public static class TrainingPlatform
 {
+    public const string TrainingPythonVersion = "3.11.9";
+
+    private static readonly string[] DirectMlPackages =
+    [
+        "torch==2.4.1",
+        "torchvision==0.19.1",
+        "torch-directml==0.2.5.dev240914",
+        "transformers==4.46.3",
+        "datasets==3.1.0",
+        "accelerate==1.1.1",
+        "peft==0.13.2"
+    ];
+
+    private static readonly string[] StandardPackages =
+    [
+        "torch",
+        "transformers",
+        "datasets",
+        "accelerate",
+        "peft"
+    ];
+
     /// <summary>The architecture of the machine the application is running on.</summary>
     public static Architecture CurrentArchitecture => RuntimeInformation.OSArchitecture;
 
@@ -99,10 +121,9 @@ public static class TrainingPlatform
     /// produces an environment that installs cleanly and then breaks at run
     /// time. This combination was verified end to end.
     /// </remarks>
+    public static IReadOnlyList<string> Packages(bool directMl) =>
+        directMl ? DirectMlPackages : StandardPackages;
+
     public static string InstallCommand(bool directMl) =>
-        directMl
-            ? "python -m pip install torch==2.4.1 torchvision==0.19.1 " +
-              "torch-directml==0.2.5.dev240914 transformers==4.46.3 datasets==3.1.0 " +
-              "accelerate==1.1.1 peft==0.13.2"
-            : "python -m pip install torch transformers datasets accelerate peft";
+        $"python -m pip install {string.Join(' ', Packages(directMl))}";
 }

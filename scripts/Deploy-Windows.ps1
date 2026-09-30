@@ -13,6 +13,12 @@
     the .NET SDK, the .NET runtime, the source tree, or any build tooling: a
     self-contained payload is copied over the remoting session.
 
+    Unless -SkipTrainingEnvironment is specified, deployment also provisions a
+    private x64 Python 3.11 environment under the destination user's local
+    application-data folder and installs the tested PyTorch DirectML, PEFT,
+    Transformers, Datasets, and Accelerate versions required by Model Trainer.
+    Windows on Arm runs this x64 training environment under emulation.
+
     -Local forces a local deployment explicitly.
 
     The repository root is resolved from this script's own location, so the
@@ -65,6 +71,10 @@
 .PARAMETER RunTests
     Run the unit test suite on this machine before publishing and abort
     deployment on failure.
+
+.PARAMETER SkipTrainingEnvironment
+    Deploy only the desktop application. Do not install or update the private
+    Python DirectML/LoRA training environment on the destination.
 
 .PARAMETER Uninstall
     Remove the installed application and its shortcuts from the destination,
@@ -131,6 +141,7 @@ param(
     [switch]$NoShortcut,
     [switch]$DesktopShortcut,
     [switch]$RunTests,
+    [switch]$SkipTrainingEnvironment,
     [switch]$Uninstall
 )
 
@@ -140,6 +151,16 @@ $ErrorActionPreference = 'Stop'
 $AppName = 'Tax Intelligence Studio'
 $ExeName = 'TaxIntelligenceStudio.Desktop.exe'
 $ProcessName = 'TaxIntelligenceStudio.Desktop'
+$TrainingPythonVersion = '3.11.9'
+$TrainingPackages = @(
+    'torch==2.4.1',
+    'torchvision==0.19.1',
+    'torch-directml==0.2.5.dev240914',
+    'transformers==4.46.3',
+    'datasets==3.1.0',
+    'accelerate==1.1.1',
+    'peft==0.13.2'
+)
 
 # ---------------------------------------------------------------------------
 # Collector container
@@ -333,6 +354,88 @@ $CompleteInstall = {
         ExePath   = $exePath
         SizeMb    = $sizeMb
         Shortcuts = $createdShortcuts
+    }
+}
+
+$InstallTrainingEnvironment = {
+    param(
+        [string]$DataPath,
+        [string]$PythonVersion,
+        [string[]]$Packages
+    )
+
+    $pythonRoot = Join-Path $DataPath 'python311-x64'
+    $privatePython = Join-Path $pythonRoot 'python.exe'
+    $environmentPath = Join-Path $DataPath '.venv-training'
+    $environmentPython = Join-Path $environmentPath 'Scripts\python.exe'
+
+    New-Item -ItemType Directory -Path $DataPath -Force | Out-Null
+
+    if (-not (Test-Path -LiteralPath $privatePython)) {
+        $installerName = "python-$PythonVersion-amd64.exe"
+        $installerPath = Join-Path ([System.IO.Path]::GetTempPath()) $installerName
+        $installerUri = "https://www.python.org/ftp/python/$PythonVersion/$installerName"
+
+        try {
+            Invoke-WebRequest -Uri $installerUri -OutFile $installerPath -UseBasicParsing
+            $installer = Start-Process -FilePath $installerPath -ArgumentList @(
+                '/quiet',
+                'InstallAllUsers=0',
+                "TargetDir=`"$pythonRoot`"",
+                'Include_core=1',
+                'Include_exe=1',
+                'Include_lib=1',
+                'Include_pip=1',
+                'Include_launcher=0',
+                'Include_test=0',
+                'Include_tools=0',
+                'AssociateFiles=0',
+                'Shortcuts=0',
+                'PrependPath=0',
+                'CompileAll=0'
+            ) -Wait -PassThru
+            if ($installer.ExitCode -ne 0) {
+                throw "Python installer exited with code $($installer.ExitCode)."
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $privatePython)) {
+        throw "Python $PythonVersion installation completed without producing '$privatePython'."
+    }
+
+    $architecture = (& $privatePython -c 'import platform; print(platform.machine())').Trim()
+    if ($LASTEXITCODE -ne 0 -or $architecture -notin @('AMD64', 'x86_64')) {
+        throw "The training interpreter must be x64, but '$privatePython' reported '$architecture'."
+    }
+
+    & $privatePython -m venv --clear $environmentPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $environmentPython)) {
+        throw "Could not create the training environment at '$environmentPath'."
+    }
+
+    & $environmentPython -m pip install --disable-pip-version-check --upgrade pip
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not update pip in the training environment.'
+    }
+
+    & $environmentPython -m pip install --disable-pip-version-check @Packages
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not install the DirectML/LoRA training packages.'
+    }
+
+    & $environmentPython -c 'import torch, torch_directml, torchvision, transformers, datasets, accelerate, peft; print(torch.__version__)'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The training environment was installed, but its required imports failed.'
+    }
+
+    [pscustomobject]@{
+        PythonPath      = $environmentPython
+        EnvironmentPath = $environmentPath
+        Architecture    = $architecture
     }
 }
 
@@ -630,6 +733,19 @@ try {
         $payloadMb = [math]::Round(((Get-ChildItem -LiteralPath $stagingPath -Recurse -File |
                     Measure-Object -Property Length -Sum).Sum / 1MB), 1)
         Write-Detail "Payload staged ($payloadMb MB)."
+
+        if (-not $SkipTrainingEnvironment) {
+            Write-Step "Installing DirectML/LoRA training environment on $($destination.ComputerName)"
+            $trainingEnvironment = Invoke-OnDestination -ScriptBlock $InstallTrainingEnvironment -ArgumentList @(
+                $destination.DataPath,
+                $TrainingPythonVersion,
+                $TrainingPackages
+            )
+            Write-Detail "Training Python: $($trainingEnvironment.PythonPath) ($($trainingEnvironment.Architecture))"
+        }
+        else {
+            Write-Note 'Skipped the private Python training environment.'
+        }
 
         Write-Step "Installing on $($destination.ComputerName)"
         Invoke-OnDestination -ScriptBlock $AssertNotRunning -ArgumentList @($ProcessName, $AppName)

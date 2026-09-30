@@ -179,7 +179,10 @@ dotnet run --project src\TaxIntelligenceStudio.Service
 That's all. There is nothing to edit, type, or install first. The installer
 builds the app from that copy, installs it for the current user, adds Start
 Menu and Desktop shortcuts, and starts it. No GitHub token and no
-administrator rights are needed.
+administrator rights are needed. Local model training additionally requires
+the Python environment described in [Local model training](#local-model-training);
+`scripts\Deploy-Windows.ps1` provisions it automatically, and the application
+repairs or creates it when a model operation first needs it.
 
 To remove it, double-click **`Uninstall.cmd`**. Your data in
 `%LOCALAPPDATA%\TaxIntelligenceStudio` is kept.
@@ -340,6 +343,9 @@ On the **build machine** (where you run the script):
 On the **destination machine**:
 
 - Windows 10 or later
+- Internet access during deployment to download the private Python 3.11
+  runtime and pinned DirectML/LoRA packages. Pass
+  `-SkipTrainingEnvironment` only when local model training is not needed.
 - PowerShell Remoting enabled:
 
   ```powershell
@@ -372,7 +378,8 @@ Deploy over HTTPS (WinRM 5986):
 ```
 
 The script reports the destination host, signed-in user, OS version and
-architecture, install path, and payload size before and after installing.
+architecture, install path, training-environment path, and payload size before
+and after installing.
 
 ### Deploy to this machine
 
@@ -414,6 +421,7 @@ Uninstall removes the installed application and its shortcuts. Local data under
 | `-NoShortcut` | Skip creating the Start Menu shortcut. |
 | `-DesktopShortcut` | Also create a Desktop shortcut. |
 | `-RunTests` | Run the unit tests before publishing and abort on failure. |
+| `-SkipTrainingEnvironment` | Skip the private x64 Python 3.11 and DirectML/LoRA package installation when model training is not needed. |
 | `-ResultsPath` | Collector container for the deployment log and deployment result. Defaults to `C:\temp\TaxIntelligenceStudio` on both machines. |
 | `-Uninstall` | Remove the application and shortcuts from the destination. |
 
@@ -426,6 +434,13 @@ Full help is available with `Get-Help .\scripts\Deploy-Windows.ps1 -Full`.
   `-Runtime` only when cross-publishing deliberately.
 - The payload is published to a temporary staging folder first. A failed build
   never leaves a partially overwritten installation on the destination.
+- Before replacing the application, deployment creates
+  `%LOCALAPPDATA%\TaxIntelligenceStudio\.venv-training` with private x64 Python
+  3.11 and the tested DirectML/LoRA dependency set. The trainer discovers this
+  path automatically. On Windows on Arm, x64 Python runs under emulation
+  because PyTorch does not publish native Windows Arm64 wheels.
+- The training environment is user-scoped, requires no administrator rights,
+  and is retained with the rest of the local application data during uninstall.
 - Deployment is refused while the application is running on the destination,
   so a live installation is never corrupted mid-copy.
 - A self-contained payload is roughly 200 MB.
@@ -460,21 +475,44 @@ current directory is not the repository root. `cd` into the clone first, or use
 
 ## Local model training
 
-The Model Trainer tab launches a local Python PEFT/LoRA workflow. For a CUDA or
-CPU environment, the selected Python must contain:
+`scripts\Deploy-Windows.ps1` installs a private x64 Python 3.11 environment at
+`%LOCALAPPDATA%\TaxIntelligenceStudio\.venv-training` by default. The Model
+Trainer discovers and validates that environment automatically. If it is
+missing or incompatible, the application inspects installed Python runtimes,
+uses a compatible x64 Python 3.10-3.12 when available, or downloads a private
+x64 Python 3.11.9 from python.org. It then creates or updates the private
+environment and verifies it before training, accelerator self-test, or local
+agent-model activation. This happens only when a model operation needs the
+environment, not at every application startup.
+
+The private environment includes all tested DirectML/LoRA components:
+
+- Python 3.11.9 x64
+- PyTorch 2.4.1
+- TorchVision 0.19.1
+- PyTorch DirectML 0.2.5.dev240914
+- Transformers 4.46.3
+- Datasets 3.1.0
+- Accelerate 1.1.1
+- PEFT 0.13.2
+
+To repair or manually prepare the environment for a non-CUDA Windows GPU, run
+the following command with an x64 Python interpreter:
+
+```powershell
+python -m pip install torch==2.4.1 torchvision==0.19.1 torch-directml==0.2.5.dev240914 transformers==4.46.3 datasets==3.1.0 accelerate==1.1.1 peft==0.13.2
+```
+
+For a separately managed CUDA or CPU environment, the selected Python must
+contain:
 
 ```powershell
 python -m pip install torch transformers datasets accelerate peft
 ```
 
-For a non-CUDA Windows GPU, install the tested DirectML runtime. These versions
-must be pinned together: `torch-directml` requires torch 2.4.1, and current
-`transformers` releases require torch 2.5 or newer and fail to import against
-2.4.1.
-
-```powershell
-python -m pip install torch==2.4.1 torchvision==0.19.1 torch-directml==0.2.5.dev240914 transformers==4.46.3 datasets==3.1.0 accelerate==1.1.1 peft==0.13.2
-```
+The DirectML versions above must be pinned together: `torch-directml` requires
+torch 2.4.1, and current `transformers` releases require torch 2.5 or newer and
+fail to import against 2.4.1.
 
 ### Trainer platform requirements
 
