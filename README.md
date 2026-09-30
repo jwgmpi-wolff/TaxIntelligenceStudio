@@ -550,10 +550,10 @@ interpreter**, not by the architecture of the machine:
 
 Windows on Arm machines **can** train. Windows runs x64 processes under
 emulation, so an x64 Python installs and runs the x64 wheels normally. This was
-verified on a Snapdragon X Elite (X1E80100): a one-step LoRA optimizer update
-completed through PyTorch DirectML on the Qualcomm Adreno X1-85 GPU, a CPU LoRA
-step also completed, and the trainer's environment check accepted the
-interpreter.
+verified on a Snapdragon X Elite (X1E80100): multi-step AdamW LoRA training
+completed through PyTorch DirectML on the Qualcomm Adreno X1-85 GPU without
+unsupported optimizer fallbacks, a CPU LoRA step also completed, and the
+trainer's environment check accepted the interpreter.
 
 The practical failure on an Arm64 machine is selecting the Arm64-native Python,
 which cannot resolve any wheel no matter how often the install command is run.
@@ -607,7 +607,7 @@ model-weight training. Tax Intelligence Studio reports NPUs as
 inference-capable and does not falsely route fine-tuning to them.
 Use **Run real accelerator self-test** to execute two measured workloads:
 
-- a real one-step LoRA optimizer update on the selected Windows GPU through
+- ten real AdamW LoRA optimizer updates on the selected Windows GPU through
   PyTorch DirectML;
 - an ONNX graph assigned to the Qualcomm QNN HTP execution provider, with
   profiling used to confirm that at least one node actually ran on the Hexagon

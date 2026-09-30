@@ -173,10 +173,77 @@ def main():
             return type(value)(copy_to_cpu(item) for item in value)
         return value
 
+    # PyTorch AdamW uses lerp, which DirectML sends through a CPU fallback that
+    # can remove the GPU device during sustained training.
+    class DirectMLAdamW(torch.optim.Optimizer):
+        def __init__(self, parameter_groups):
+            super().__init__(parameter_groups, {})
+
+        @torch.no_grad()
+        def step(self, closure=None):
+            loss = None
+            if closure is not None:
+                with torch.enable_grad():
+                    loss = closure()
+
+            for group in self.param_groups:
+                beta1, beta2 = group["betas"]
+                for parameter in group["params"]:
+                    if parameter.grad is None:
+                        continue
+                    gradient = parameter.grad
+                    if gradient.is_sparse:
+                        raise RuntimeError("DirectML AdamW does not support sparse gradients.")
+                    if group.get("maximize", False):
+                        gradient = -gradient
+
+                    state = self.state[parameter]
+                    if not state:
+                        state["step"] = 0
+                        state["exp_avg"] = torch.zeros_like(parameter)
+                        state["exp_avg_sq"] = torch.zeros_like(parameter)
+
+                    saved_step = state["step"]
+                    if isinstance(saved_step, torch.Tensor):
+                        saved_step = int(saved_step.item())
+                    step = saved_step + 1
+                    state["step"] = step
+
+                    if group["weight_decay"] != 0:
+                        parameter.mul_(1 - group["lr"] * group["weight_decay"])
+
+                    exp_avg = state["exp_avg"]
+                    exp_avg_sq = state["exp_avg_sq"]
+                    exp_avg.mul_(beta1).add_(gradient, alpha=1 - beta1)
+                    exp_avg_sq.mul_(beta2).addcmul_(
+                        gradient, gradient, value=1 - beta2
+                    )
+
+                    bias_correction1 = 1 - beta1**step
+                    bias_correction2 = 1 - beta2**step
+                    denominator = (
+                        exp_avg_sq.sqrt()
+                        .div_(bias_correction2**0.5)
+                        .add_(group["eps"])
+                    )
+                    parameter.addcdiv_(
+                        exp_avg,
+                        denominator,
+                        value=-(group["lr"] / bias_correction1),
+                    )
+
+            return loss
+
     class DirectMLTrainer(Trainer):
         def create_accelerator_and_postprocess(self):
             super().create_accelerator_and_postprocess()
             self.accelerator.device_placement = False
+
+        def create_optimizer(self):
+            if self.optimizer is None:
+                default_optimizer = super().create_optimizer()
+                self.optimizer = DirectMLAdamW(default_optimizer.param_groups)
+            return self.optimizer
 
         def _move_model_to_device(self, model, device):
             return

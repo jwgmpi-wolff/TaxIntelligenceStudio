@@ -373,8 +373,8 @@ public sealed class ModelTrainingServiceTests
     [Fact]
     public void GpuDetection_MarksIntegratedArmGpuTrainable()
     {
-        // Verified on a Snapdragon X Elite: an emulated x64 Python completes a
-        // one-step LoRA update on this GPU through DirectML.
+        // Verified on a Snapdragon X Elite: an emulated x64 Python completes
+        // multi-step AdamW LoRA training on this GPU through DirectML.
         var gpu = WindowsHardwareAccelerationService.CreateGpuAccelerator(
             "Qualcomm(R) Adreno(TM) X1-85 GPU",
             cudaAvailable: false);
@@ -383,6 +383,24 @@ public sealed class ModelTrainingServiceTests
         Assert.True(gpu.SupportsTraining);
         Assert.True(gpu.SupportsInference);
         Assert.Null(gpu.TrainingUnavailableReason);
+    }
+
+    [Fact]
+    public void EmbeddedTrainer_AvoidsUnsupportedDirectMlAdamWLerpPath()
+    {
+        const string resourceName =
+            "TaxIntelligenceStudio.Infrastructure.Training.local_lora_trainer.py";
+        using var stream = typeof(LocalModelTrainingService).Assembly
+            .GetManifestResourceStream(resourceName);
+
+        Assert.NotNull(stream);
+        using var reader = new StreamReader(stream);
+        var trainer = reader.ReadToEnd();
+
+        Assert.Contains("class DirectMLAdamW", trainer);
+        Assert.Contains("exp_avg.mul_(beta1).add_", trainer);
+        Assert.DoesNotContain(".lerp_", trainer);
+        Assert.DoesNotContain("torch._foreach", trainer);
     }
 
     [Fact]

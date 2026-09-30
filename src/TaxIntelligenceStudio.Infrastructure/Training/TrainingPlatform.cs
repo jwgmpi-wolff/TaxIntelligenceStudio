@@ -19,8 +19,8 @@ namespace TaxIntelligenceStudio.Infrastructure.Training;
 /// <item>
 /// Windows on Arm runs x64 processes under emulation, and an emulated x64
 /// Python installs and runs those wheels normally. This was verified on a
-/// Snapdragon X Elite machine: a one-step LoRA update completed through PyTorch
-/// DirectML on the Qualcomm Adreno X1-85 GPU, and a CPU LoRA step also
+/// Snapdragon X Elite machine: multi-step AdamW LoRA training completed through
+/// PyTorch DirectML on the Qualcomm Adreno X1-85 GPU, and a CPU LoRA step also
 /// completed. Arm64 hardware therefore trains successfully, provided the
 /// selected interpreter is x64.
 /// </item>

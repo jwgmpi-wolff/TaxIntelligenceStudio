@@ -50,18 +50,49 @@ def test_gpu():
     base_weight = torch.randn((32, 32), device=device)
     lora_a = torch.nn.Parameter(torch.randn((32, 4), device=device) * 0.01)
     lora_b = torch.nn.Parameter(torch.zeros((4, 32), device=device))
-    optimizer = torch.optim.SGD([lora_a, lora_b], lr=1e-2)
+    parameters = (lora_a, lora_b)
+    optimizer_state = {
+        parameter: {
+            "exp_avg": torch.zeros_like(parameter),
+            "exp_avg_sq": torch.zeros_like(parameter),
+        }
+        for parameter in parameters
+    }
+    beta1, beta2 = (0.9, 0.999)
+    learning_rate = 1e-2
+    epsilon = 1e-8
     inputs = torch.randn((8, 32), device=device)
     targets = torch.randn((8, 32), device=device)
-    predictions = inputs @ (base_weight + lora_a @ lora_b)
-    loss = ((predictions - targets) ** 2).mean()
-    loss.backward()
-    optimizer.step()
+    for step in range(1, 11):
+        for parameter in parameters:
+            parameter.grad = None
+        predictions = inputs @ (base_weight + lora_a @ lora_b)
+        loss = ((predictions - targets) ** 2).mean()
+        loss.backward()
+        with torch.no_grad():
+            for parameter in parameters:
+                gradient = parameter.grad
+                state = optimizer_state[parameter]
+                state["exp_avg"].mul_(beta1).add_(gradient, alpha=1 - beta1)
+                state["exp_avg_sq"].mul_(beta2).addcmul_(
+                    gradient, gradient, value=1 - beta2
+                )
+                denominator = (
+                    state["exp_avg_sq"]
+                    .sqrt()
+                    .div_((1 - beta2**step) ** 0.5)
+                    .add_(epsilon)
+                )
+                parameter.addcdiv_(
+                    state["exp_avg"],
+                    denominator,
+                    value=-(learning_rate / (1 - beta1**step)),
+                )
     train_loss = float(loss.detach().cpu())
     if not train_loss > 0:
         raise RuntimeError(f"DirectML LoRA training produced invalid loss {train_loss}.")
     device_name = torch_directml.device_name(index).replace("\x00", "")
-    return True, f"{device_name}; one-step LoRA train_loss={train_loss:.6f}"
+    return True, f"{device_name}; ten-step AdamW LoRA train_loss={train_loss:.6f}"
 
 
 def test_npu():
@@ -135,7 +166,7 @@ def main():
     try:
         gpu_verified, gpu_device = test_gpu()
         details.append(
-            "A real one-step LoRA update completed through PyTorch DirectML."
+            "Ten real AdamW LoRA updates completed through PyTorch DirectML."
             if gpu_verified
             else f"GPU test did not verify: {gpu_device}."
         )
