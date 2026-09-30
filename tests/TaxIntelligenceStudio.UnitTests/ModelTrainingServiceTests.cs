@@ -399,6 +399,13 @@ public sealed class ModelTrainingServiceTests
 
         Assert.Contains("class DirectMLAdamW", trainer);
         Assert.Contains("exp_avg.mul_(beta1).add_", trainer);
+        Assert.Contains(
+            "max_sequence_length = 512 if args.device == \"directml\"",
+            trainer);
+        Assert.Contains(
+            "gradient_checkpointing=args.device == \"directml\"",
+            trainer);
+        Assert.Contains("trainer_version", trainer);
         Assert.DoesNotContain(".lerp_", trainer);
         Assert.DoesNotContain("torch._foreach", trainer);
     }

@@ -564,6 +564,14 @@ this problem explicitly instead of failing part-way through a run.
 Accelerator selection order is CUDA GPU, then DirectML GPU, then CPU when CPU
 fallback is explicitly enabled. NPUs are never selected for training.
 
+DirectML training limits records to 512 tokens and enables non-reentrant
+gradient checkpointing. These settings reduce activation pressure on
+shared-memory Windows GPUs and prevent device removal during sustained
+backward passes. CUDA and CPU training retain the 2,048-token limit. The
+effective sequence length and trainer version are included in every checkpoint
+compatibility manifest, so an older incompatible checkpoint is never resumed
+silently.
+
 Enter a local Hugging Face-compatible model folder or model identifier, select
 the exported IRS JSONL dataset, choose an output directory, and start training.
 The application uses CUDA when an NVIDIA CUDA runtime is detected, otherwise it

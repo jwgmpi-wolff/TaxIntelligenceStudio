@@ -35,8 +35,10 @@ def main():
     args = parse_args()
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    max_sequence_length = 512 if args.device == "directml" else 2048
     run_config_path = output / "training_run.json"
     run_config = {
+        "trainer_version": 2,
         "model": args.model,
         "dataset_sha256": hashlib.sha256(
             Path(args.dataset).read_bytes()
@@ -44,6 +46,7 @@ def main():
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
+        "max_sequence_length": max_sequence_length,
     }
     if args.resume_checkpoint:
         checkpoint = Path(args.resume_checkpoint).resolve()
@@ -63,8 +66,8 @@ def main():
         if saved_config != run_config:
             raise SystemExit(
                 "The selected checkpoint was created with a different base model, "
-                "dataset SHA-256, epochs, batch size, or learning rate. Restore the "
-                "original settings or start new training."
+                "dataset SHA-256, epochs, batch size, learning rate, sequence length, "
+                "or trainer version. Restore the original settings or start new training."
             )
     run_config_path.write_text(
         json.dumps(run_config, indent=2), encoding="utf-8"
@@ -137,16 +140,24 @@ def main():
 
     def tokenize(batch):
         return tokenizer(
-            batch["text"], truncation=True, max_length=2048, padding=False
+            batch["text"],
+            truncation=True,
+            max_length=max_sequence_length,
+            padding=False,
         )
 
-    report_progress("tokenization", 12, "Tokenizing training records")
+    report_progress(
+        "tokenization",
+        12,
+        f"Tokenizing training records (maximum {max_sequence_length} tokens)",
+    )
     tokenized = dataset.map(tokenize, batched=True, remove_columns=dataset.column_names)
     dtype = torch.float16 if args.device in ("cuda", "directml") else torch.float32
     report_progress("model", 16, f"Loading base model on {args.device}")
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=dtype, trust_remote_code=False
     )
+    model.config.use_cache = False
     model = get_peft_model(
         model,
         LoraConfig(
@@ -319,6 +330,8 @@ def main():
         per_device_train_batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         fp16=args.device == "cuda",
+        gradient_checkpointing=args.device == "directml",
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to=[],
         save_strategy="steps",
         save_steps=10,
