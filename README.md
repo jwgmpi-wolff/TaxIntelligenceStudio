@@ -6,7 +6,7 @@
 
 1. [Download the complete repository ZIP](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip).
 2. Extract the ZIP.
-3. Double-click **[`Install.cmd`](./Install.cmd)** in the extracted top-level
+3. Double-click **[`Install-Local.cmd`](./Install-Local.cmd)** in the extracted top-level
    folder.
 
 The installer builds and installs the application for the current Windows user,
@@ -14,7 +14,7 @@ creates Start Menu and Desktop shortcuts, provisions model-training components
 when needed, and launches the application. Administrator rights are not
 required.
 
-> **Important:** Download and extract the complete ZIP. `Install.cmd` uses the
+> **Important:** Download and extract the complete ZIP. `Install-Local.cmd` uses the
 > accompanying `scripts\Install.ps1` file and cannot install correctly if it is
 > downloaded by itself.
 
@@ -192,7 +192,7 @@ dotnet run --project src\TaxIntelligenceStudio.Service
 
 1. Get a copy of this repository: clone it, or on GitHub choose
    **Code > Download ZIP** and extract it.
-2. Double-click **`Install.cmd`** in the top folder.
+2. Double-click **`Install-Local.cmd`** in the top folder.
 
 That's all. There is nothing to edit, type, or install first. The installer
 builds the app from that copy, installs it for the current user, adds Start
