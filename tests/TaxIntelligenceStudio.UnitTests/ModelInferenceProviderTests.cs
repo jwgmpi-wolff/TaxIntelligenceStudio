@@ -214,6 +214,28 @@ public sealed class ModelInferenceProviderTests
         Assert.Contains("No verified authoritative-source context", result.Warnings[0]);
     }
 
+    [Theory]
+    [InlineData("Trained")]
+    [InlineData("Local")]
+    [InlineData("Azure")]
+    public async Task InferenceService_WithholdsCorruptedPropertyTaxesBeforeSuccessfulAudit(string providerId)
+    {
+        var provider = new StubProvider(providerId, providerId == "Azure", true)
+        {
+            Response = new ModelInferenceResponse("Property taxes: $10,0 and $8,0.",
+                providerId, "test", "stop", null, TimeSpan.Zero, [], false, "none", [])
+        };
+        var options = new ModelProviderOptions();
+        var audit = new RecordingAuditRepository();
+        var service = new ModelInferenceService(
+            new ModelProviderResolver([provider], options), audit, options, TimeProvider.System);
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => service.InferAsync(
+            new ModelInferenceRequest([new ModelChatMessage("user", "Example land tax $10000; condo tax $8000.")]),
+            providerId));
+        Assert.Contains("malformed currency", error.Message);
+        Assert.Empty(audit.Entries);
+    }
+
     [Fact]
     public async Task InferenceService_UsesCachedSearchContextInOfflineMode()
     {

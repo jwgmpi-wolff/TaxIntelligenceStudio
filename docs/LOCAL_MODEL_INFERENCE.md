@@ -8,6 +8,31 @@ elapsed time, cited source URLs, source-data mode, and warnings.
 
 ## Tax-assistance behavior
 
+### Number integrity and limitations
+
+User-supplied currency strings are repeated exactly in application system
+context, separate from earlier assistant replies. Instructions require keeping
+amounts and annual/monthly periods intact, showing arithmetic, and asking for
+missing tax year, eligibility and property basis information rather than
+inventing deductions or estimated savings.
+
+Before accepting an answer, the shared chat service checks dollar-prefixed
+amounts for malformed grouping/digits and possible 10x/100x/1,000x magnitude
+changes relative to user-supplied amounts. A flagged answer is withheld with an
+explicit error and is not appended to the conversation or exportable responses.
+It is not automatically corrected or silently regenerated. A legitimate derived
+amount can also trigger the conservative check; review the arithmetic separately.
+
+This is a limited sanity check, not a financial calculator or tax-law verifier.
+It does not catch all invented numbers, bare numbers without a dollar sign,
+period changes, incorrect arithmetic, fabricated eligibility or legal claims.
+Provider warnings explicitly disclose this. Cached citations do not establish
+that the model interpreted a source correctly. A poorly performing adapter may
+still give unreliable advice: use a different explicitly selected model or
+evaluate/retrain the adapter rather than relying on unsupported conclusions.
+If an earlier reply was corrupt, start a new conversation so it is not reused
+as conversational context.
+
 The model is prompted to act as an expert U.S. tax research and planning
 assistant: apply the facts supplied, explain relevant options and tradeoffs,
 show calculations when useful, and ask focused follow-up questions when

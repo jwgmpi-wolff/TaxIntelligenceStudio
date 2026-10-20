@@ -625,6 +625,8 @@
                                  VerticalScrollBarVisibility="Auto"
                                  Text="{Binding ModelInferencePrompt, UpdateSourceTrigger=PropertyChanged}" />
                         <TextBlock Text="Conversation" FontWeight="SemiBold" />
+                        <TextBlock Margin="0,6,0,6" TextWrapping="Wrap"
+                                   Text="AI-generated, not verified tax advice. Numbers and citations can still be wrong. Numeric screening catches only some errors; independently verify the entire answer before relying on it. Start a new conversation after an unreliable reply." />
                         <WrapPanel Margin="0,8,0,8">
                             <ui:Button Content="Export response PDF" Command="{Binding ExportInferencePdfCommand}" />
                             <ui:Button Margin="8,0,0,0" Content="Export response Word" Command="{Binding ExportInferenceWordCommand}" />

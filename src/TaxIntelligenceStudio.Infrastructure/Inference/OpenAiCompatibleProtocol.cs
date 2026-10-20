@@ -222,11 +222,26 @@ internal static class OpenAiCompatibleProtocol
             "For personalized questions, apply the supplied facts, explain options and tradeoffs, " +
             "show calculations when useful, and ask focused questions when a missing fact could " +
             "change the result. Do not invent tax rules, rates, thresholds, forms, deadlines, or " +
+            "deduction eligibility. Preserve every user-supplied amount and its annual/monthly period exactly. " +
+            "Do not treat take-home or 'net' employer earnings as W-2 taxable wages without asking. " +
+            "Ask for the tax year, filing status, ages, benefit/retirement coverage, property basis, " +
+            "land/building allocation, rental service dates and whether property taxes are already included " +
+            "in expenses before giving personalized contribution limits, depreciation or tax savings. " +
+            "Do not assume a lease is preferential-rate income, land is depreciable, ownership qualifies " +
+            "for depletion, or passive losses offset wages. Do not invent donations, IRA/HSA eligibility, " +
+            "carryovers, mortgage interest or mileage. Recommend dollar amounts only when supported by " +
+            "the supplied facts and relevant tax-year evidence. A deduction is not a dollar-for-dollar " +
+            "tax saving; show calculations and distinguish those concepts. " +
             "citations. Cite exact supplied authoritative URLs for tax-law claims; if the supplied " +
             "evidence is missing, stale, or insufficient, say what cannot be verified and what " +
             "should be checked. Identify material federal versus state/local distinctions and " +
             "recommend a qualified tax professional for complex or high-stakes decisions."
         };
+        var factReminder = InferenceNumericIntegrity.CreateFactReminder(request.Messages);
+        if (factReminder.Length > 0)
+        {
+            systemInstructions.Add(factReminder);
+        }
         if (request.TaxYear is not null)
         {
             systemInstructions.Add($"The requested tax year is {request.TaxYear.Value}.");

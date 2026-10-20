@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.IO;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Desktop.ViewModels;
 using TaxIntelligenceStudio.Domain;
@@ -114,6 +115,26 @@ public sealed class ConcurrentJobsTests
         Assert.False(vm.ChooseTrainingOutputCommand.CanExecute(null));
     }
 
+    [Fact]
+    public async Task RejectedInference_DoesNotEnterConversationOrEnableExport()
+    {
+        var fixture = new Fixture();
+        var vm = fixture.ViewModel;
+        var task = vm.RunModelInferenceCommand.ExecuteAsync(null);
+        fixture.FailInferenceIntegrity();
+        await task;
+        Assert.Equal(string.Empty, vm.ModelInferenceResponse);
+        Assert.Equal("Test question", vm.ModelInferencePrompt);
+        Assert.False(vm.ExportInferencePdfCommand.CanExecute(null));
+        Assert.False(vm.ExportInferenceWordCommand.CanExecute(null));
+        Assert.Contains("Response withheld", vm.ModelProviderStatus);
+        var retry = vm.RunModelInferenceCommand.ExecuteAsync(null);
+        fixture.CompleteInference();
+        await retry;
+        Assert.Single(fixture.LastInferenceRequest!.Messages);
+        Assert.Contains("Test answer", vm.ModelInferenceResponse);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -149,9 +170,10 @@ public sealed class ConcurrentJobsTests
     private sealed class Fixture
     {
         private readonly TaskCompletionSource<ModelTrainingResult> _training = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource<ModelInferenceResponse> _inference = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource<ModelInferenceResponse> _inference = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public MainViewModel ViewModel { get; }
+        public ModelInferenceRequest? LastInferenceRequest { get; private set; }
 
         public Fixture()
         {
@@ -161,7 +183,11 @@ public sealed class ConcurrentJobsTests
                 nameof(IModelTrainingService.GetCheckpoints) => new ModelTrainingCheckpoint[] { new("New run", null, null, null) },
                 _ => throw new NotSupportedException(method.Name)
             });
-            var inference = Stub<IModelInferenceService>((_, args) => _inference.Task.WaitAsync((CancellationToken)args![2]!));
+            var inference = Stub<IModelInferenceService>((_, args) =>
+            {
+                LastInferenceRequest = (ModelInferenceRequest)args![0]!;
+                return _inference.Task.WaitAsync((CancellationToken)args[2]!);
+            });
             var agent = Stub<IAgentModelService>((method, _) => method.Name switch
             {
                 nameof(IAgentModelService.GetActiveModel) => null,
@@ -187,8 +213,14 @@ public sealed class ConcurrentJobsTests
                 true, "CPU", "test-output", "Test run finished", DateTimeOffset.UtcNow));
 
         public void CompleteInference() =>
-            _inference.SetResult(new ModelInferenceResponse("Test answer", "Trained", "test-adapter",
+            _inference.TrySetResult(new ModelInferenceResponse("Test answer", "Trained", "test-adapter",
                 "stop", null, TimeSpan.Zero, [], true, "cached", []));
+
+        public void FailInferenceIntegrity()
+        {
+            _inference.SetException(new InvalidDataException("Response withheld: malformed currency amount."));
+            _inference = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
 
         public void Fail(bool training)
         {

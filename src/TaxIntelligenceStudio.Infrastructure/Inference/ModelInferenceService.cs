@@ -56,6 +56,8 @@ public sealed class ModelInferenceService(
             $"Sending request to {provider.DisplayName} ({provider.ModelId ?? "configured model"}). " +
             "The first response may take longer while a local model loads.");
         var response = await provider.InferAsync(request, cancellationToken, progress);
+        progress?.Report("Checking response currency formatting and possible magnitude changes...");
+        InferenceNumericIntegrity.Validate(request.Messages, response.Content);
         progress?.Report("Model response received. Recording privacy-safe audit metadata...");
         var warnings = response.Warnings.ToList();
         if (sources.Count == 0)
@@ -75,6 +77,11 @@ public sealed class ModelInferenceService(
             warnings.Add(sources.Count == 0
                 ? "Offline mode: no cached authoritative-source context was supplied; tax facts may be incomplete or outdated."
                 : "Offline mode: authoritative-source information may be outdated.");
+        }
+        warnings.Add("Numeric screening is limited: it does not verify calculations, tax law, eligibility, or every factual inconsistency.");
+        if (response.FinishReason == "length")
+        {
+            warnings.Add("The model reached its output limit; this answer may be incomplete.");
         }
 
         response = response with
