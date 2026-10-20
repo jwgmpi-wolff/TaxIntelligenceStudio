@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Resource Include="Assets\TaxIntelligenceStudio.ico" />
+    <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -56,8 +56,17 @@ public sealed class LiveGuidanceService(
             sources,
             timeProvider.GetUtcNow());
 
-        var inputJson = JsonSerializer.Serialize(request);
-        var outputJson = JsonSerializer.Serialize(response);
+        var inputJson = JsonSerializer.Serialize(new
+        {
+            RequestType = "LiveGuidanceVerification",
+            SourceCount = request.Sources.Count
+        });
+        var outputJson = JsonSerializer.Serialize(new
+        {
+            response.IsVerified,
+            VerifiedSourceCount = sources.Count(source => source.IsVerified),
+            SourceCount = sources.Count
+        });
         var integrityHash = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes($"{inputJson}\n{outputJson}")));
 

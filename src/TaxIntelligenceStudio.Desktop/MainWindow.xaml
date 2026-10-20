@@ -11,15 +11,21 @@
                  Height="820"
                  MinWidth="480"
                  MinHeight="480"
+                 Background="{DynamicResource ComfortBackgroundBrush}"
+                 Foreground="{DynamicResource ComfortTextBrush}"
+                 FontFamily="Segoe UI"
+                 FontSize="14"
                  WindowStartupLocation="CenterScreen"
                  ExtendsContentIntoTitleBar="True">
-    <Grid>
+    <Grid Background="{DynamicResource ComfortBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="56" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <ui:TitleBar Title="Tax Intelligence Studio"
+                     Background="{DynamicResource ComfortBackgroundBrush}"
+                     Foreground="{DynamicResource ComfortTextBrush}"
                      ShowMinimize="True"
                      ShowMaximize="True"
                      ShowClose="True" />
@@ -54,6 +60,14 @@
                                  Width="180"
                                  HorizontalAlignment="Left"
                                  Text="{Binding MaximumDocuments, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="Dataset file count (0 = automatic size-based splitting)" TextWrapping="Wrap" />
+                        <TextBox Margin="0,6,0,8"
+                                 Width="180"
+                                 HorizontalAlignment="Left"
+                                 IsEnabled="{Binding IsNotBusy}"
+                                 Text="{Binding DatasetFileCount, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Margin="0,0,0,20" TextWrapping="Wrap" Opacity="0.75"
+                                   Text="A positive count divides all exported records evenly into that many JSONL files. The full dataset is also retained for local training." />
                         <WrapPanel>
                             <ui:Button Margin="0,0,12,0"
                                        Appearance="Primary"
@@ -260,7 +274,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <StackPanel x:Name="TrainerSettings" Grid.Row="2">
+                    <StackPanel x:Name="TrainerSettings" Grid.Row="2" IsEnabled="{Binding CanEditTraining}">
                         <TextBlock Text="Base type / model family" />
                         <ComboBox Margin="0,5,0,12"
                                   ItemsSource="{Binding ModelFamilies}"
@@ -274,14 +288,27 @@
                         <TextBlock Text="Selected or custom local/Hugging Face model ID" />
                         <TextBox Margin="0,5,0,12"
                                  Text="{Binding BaseModel, UpdateSourceTrigger=PropertyChanged}" />
-                        <TextBlock Text="Grounded JSONL dataset" />
-                        <DockPanel Margin="0,5,0,12">
-                            <ui:Button DockPanel.Dock="Right"
-                                       Margin="8,0,0,0"
+                        <TextBlock Text="Grounded JSONL datasets (one combined training run)" />
+                        <WrapPanel Margin="0,5,0,6">
+                            <ui:Button Margin="0,0,8,0"
                                        Command="{Binding ChooseTrainingDatasetCommand}"
-                                       Content="Browse" />
-                            <TextBox Text="{Binding TrainingDatasetPath, UpdateSourceTrigger=PropertyChanged}" />
-                        </DockPanel>
+                                       Content="Add datasets..." />
+                            <ui:Button Margin="0,0,8,0"
+                                       Command="{Binding RemoveTrainingDatasetCommand}"
+                                       Content="Remove selected" />
+                            <ui:Button Command="{Binding ClearTrainingDatasetsCommand}"
+                                       Content="Clear queue" />
+                        </WrapPanel>
+                        <ListBox Margin="0,0,0,6"
+                                 Height="120"
+                                 ItemsSource="{Binding TrainingDatasetPaths}"
+                                 SelectedItem="{Binding SelectedTrainingDataset}"
+                                 IsEnabled="{Binding CanEditTraining}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                        <TextBlock Margin="0,0,0,12"
+                                   Text="{Binding TrainingDatasetSummary}"
+                                   TextWrapping="Wrap" />
                         <TextBlock Text="Python executable" />
                         <TextBox Margin="0,5,0,0"
                                  Text="{Binding PythonExecutable, UpdateSourceTrigger=PropertyChanged}" />
@@ -289,7 +316,7 @@
 
                     <StackPanel x:Name="TrainerRunPanel" Grid.Row="2" Grid.Column="2">
                         <TextBlock Text="Adapter output directory" />
-                        <DockPanel Margin="0,5,0,12">
+                        <DockPanel Margin="0,5,0,12" IsEnabled="{Binding CanEditTraining}">
                             <ui:Button DockPanel.Dock="Right"
                                        Margin="8,0,0,0"
                                        Command="{Binding ChooseTrainingOutputCommand}"
@@ -297,7 +324,7 @@
                             <TextBox Text="{Binding TrainingOutputDirectory, UpdateSourceTrigger=PropertyChanged}" />
                         </DockPanel>
                         <TextBlock Text="Resume checkpoint" />
-                        <DockPanel Margin="0,5,0,12">
+                        <DockPanel Margin="0,5,0,12" IsEnabled="{Binding CanEditTraining}">
                             <ui:Button DockPanel.Dock="Right"
                                        Margin="8,0,0,0"
                                        Command="{Binding RefreshCheckpointsCommand}"
@@ -307,12 +334,18 @@
                                       SelectedItem="{Binding SelectedCheckpoint}" />
                         </DockPanel>
                         <CheckBox Margin="0,0,0,12"
+                                  IsEnabled="{Binding CanEditTraining}"
                                   IsChecked="{Binding AllowCpuFallback}"
                                   Content="Allow CPU fallback (slow; never selected silently)" />
                         <ui:Button HorizontalAlignment="Left"
                                    Appearance="Primary"
                                    Command="{Binding TrainModelCommand}"
                                    Content="Start LoRA fine-tuning" />
+                        <ui:Button HorizontalAlignment="Left" Margin="0,8,0,0"
+                                   Command="{Binding TrainModelCancelCommand}"
+                                   Content="Cancel training" />
+                        <TextBlock Margin="0,8,0,0" TextWrapping="Wrap"
+                                   Text="Training and inference can run together. They share CPU/GPU and memory; concurrent jobs can be slower or run out of memory. Inference keeps using the activated adapter, not the adapter being trained." />
                         <ProgressBar Margin="0,14,0,0"
                                      Height="12"
                                      Minimum="0"
@@ -481,6 +514,133 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="7  Model Inference">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="20">
+                        <TextBlock Text="Model provider inference"
+                                   FontSize="28"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Margin="0,8,0,16"
+                                   TextWrapping="Wrap"
+                                   Text="Trained uses the adapter activated in Agent Model through local Python/PEFT, with IRS cache retrieval and conversation history. Local uses the configured Ollama/OpenAI-compatible endpoint. Azure sends the conversation to the configured cloud deployment. No provider fallback occurs. Cached sources may be outdated; responses are not verified tax advice." />
+                        <TextBlock Text="Provider" />
+                        <ComboBox Margin="0,5,0,12"
+                                  Width="240"
+                                  HorizontalAlignment="Left"
+                                  ItemsSource="{Binding ModelProviderIds}"
+                                  IsEnabled="{Binding IsNotBusy}"
+                                  SelectedItem="{Binding SelectedInferenceProvider}" />
+                        <TextBlock Text="Active trained adapter (used by Trained, not Local)"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Margin="0,5,0,12"
+                                   Text="{Binding ActiveAgentModelSummary}"
+                                   TextWrapping="Wrap" />
+                        <WrapPanel Margin="0,0,0,12">
+                            <ui:Button Margin="0,0,12,0"
+                                       Command="{Binding RefreshModelProvidersCommand}"
+                                       Content="Check provider availability" />
+                            <ui:Button Appearance="Primary"
+                                       Command="{Binding RunModelInferenceCommand}"
+                                       Content="Send message" />
+                            <ui:Button Margin="12,0,0,0"
+                                       Command="{Binding NewModelConversationCommand}"
+                                       Content="New conversation" />
+                            <ui:Button Margin="12,0,0,0"
+                                       Command="{Binding RunModelInferenceCancelCommand}"
+                                       Content="Cancel request" />
+                        </WrapPanel>
+                        <TextBlock Margin="0,0,0,12"
+                                   Text="{Binding ModelProviderStatus}"
+                                   TextWrapping="Wrap" />
+                        <ProgressBar Height="8"
+                                     Margin="0,0,0,6"
+                                     IsIndeterminate="True">
+                            <ProgressBar.Style>
+                                <Style TargetType="ProgressBar">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsInferenceRunning}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ProgressBar.Style>
+                        </ProgressBar>
+                        <TextBlock Margin="0,0,0,12"
+                                   Text="{Binding ModelInferenceElapsed}"
+                                   TextWrapping="Wrap" />
+                        <TextBlock Text="Images and documents for your next message" FontWeight="SemiBold" />
+                        <TextBlock Margin="0,5,0,6" TextWrapping="Wrap"
+                                   Text="Extracted text/findings are included in the conversation, not training data. Local processing only; choosing Azure for the chat sends extracted content to Azure. Review OCR for errors. Image options apply when adding files; PDF/Office attachments are text/OCR only." />
+                        <WrapPanel IsEnabled="{Binding IsNotBusy}" Margin="0,0,0,6">
+                            <CheckBox Margin="0,0,16,0" Content="Detect/count faces (no identity)"
+                                      IsChecked="{Binding DetectAttachmentFaces}" />
+                            <CheckBox Content="Describe objects/scenes using local vision model (may be slow)"
+                                      IsChecked="{Binding DescribeAttachmentObjects}" />
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,6">
+                            <ui:Button Content="Add images/documents..." Command="{Binding AddInferenceAttachmentsCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Remove attachment" Command="{Binding RemoveInferenceAttachmentCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Clear attachments" Command="{Binding ClearInferenceAttachmentsCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Cancel extraction" Command="{Binding AddInferenceAttachmentsCancelCommand}" />
+                        </WrapPanel>
+                        <ListBox Height="80" ItemsSource="{Binding InferenceAttachmentItems}"
+                                 SelectedItem="{Binding SelectedInferenceAttachment}"
+                                 DisplayMemberPath="Summary" IsEnabled="{Binding IsNotBusy}" />
+                        <TextBlock Margin="0,5,0,6" TextWrapping="Wrap" Text="{Binding InferenceAttachmentStatus}" />
+                        <Expander Header="Review selected attachment extraction" Margin="0,0,0,12">
+                            <TextBox Height="160" IsReadOnly="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Text="{Binding SelectedInferenceAttachment.Content, Mode=OneWay}" />
+                        </Expander>
+                        <TextBlock Text="Your message (question or follow-up)" />
+                        <Expander Header="Saved prompts (local history)" Margin="0,6,0,8">
+                            <StackPanel>
+                                <TextBlock Text="Sent typed prompts are saved on this device, even if generation fails. Replies and attachment excerpts are excluded."
+                                           TextWrapping="Wrap" />
+                                <ListBox Height="110" ItemsSource="{Binding SavedPrompts}"
+                                         SelectedItem="{Binding SelectedSavedPrompt}" DisplayMemberPath="DisplayText"
+                                         IsEnabled="{Binding IsNotBusy}" />
+                                <TextBox Height="75" IsReadOnly="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding SelectedSavedPrompt.Prompt, Mode=OneWay}" />
+                                <WrapPanel Margin="0,6,0,6">
+                                    <ui:Button Content="Reuse selected prompt" Command="{Binding ReusePromptCommand}" />
+                                    <ui:Button Content="Delete selected" Margin="8,0,0,0" Command="{Binding DeletePromptCommand}" />
+                                    <ui:Button Content="Clear history" Margin="8,0,0,0" Command="{Binding ClearPromptHistoryCommand}" />
+                                    <ui:Button Content="Refresh history" Margin="8,0,0,0" Command="{Binding LoadPromptHistoryCommand}" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding PromptHistoryStatus}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Expander>
+                        <TextBox Margin="0,5,0,16"
+                                 MinHeight="100"
+                                 AcceptsReturn="True"
+                                 IsEnabled="{Binding IsNotBusy}"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Text="{Binding ModelInferencePrompt, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="Conversation" FontWeight="SemiBold" />
+                        <WrapPanel Margin="0,8,0,8">
+                            <ui:Button Content="Export response PDF" Command="{Binding ExportInferencePdfCommand}" />
+                            <ui:Button Margin="8,0,0,0" Content="Export response Word" Command="{Binding ExportInferenceWordCommand}" />
+                            <CheckBox Margin="16,0,0,0" Content="Include full conversation"
+                                      IsEnabled="{Binding IsNotBusy}"
+                                      IsChecked="{Binding ExportFullInferenceConversation}" />
+                        </WrapPanel>
+                        <TextBlock Text="{Binding InferenceExportStatus}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <TextBox Margin="0,5,0,0"
+                                 MinHeight="220"
+                                 AcceptsReturn="True"
+                                 IsReadOnly="True"
+                                 TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto"
+                                 Text="{Binding ModelInferenceResponse}" />
+                    </StackPanel>
                 </ScrollViewer>
             </TabItem>
         </TabControl>

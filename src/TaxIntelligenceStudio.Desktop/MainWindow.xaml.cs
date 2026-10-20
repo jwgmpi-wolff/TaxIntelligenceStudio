@@ -18,6 +18,7 @@ public partial class MainWindow : FluentWindow
     {
         InitializeComponent();
         DataContext = viewModel;
+        Loaded += async (_, _) => await viewModel.LoadPromptHistoryCommand.ExecuteAsync(null);
         FitToWorkArea();
         SizeChanged += MainWindow_OnSizeChanged;
         PreviewMouseWheel += MainWindow_OnPreviewMouseWheel;
@@ -25,6 +26,13 @@ public partial class MainWindow : FluentWindow
         AnalysisScroll.SizeChanged += (_, e) => FillViewport(AnalysisLayout, e.NewSize.Height);
         ApplyResponsiveLayout(Width < CompactLayoutWidth);
         ApplyScale(Height);
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        // FluentWindow's native title-bar setup replaces the XAML background.
+        SetResourceReference(BackgroundProperty, "ComfortBackgroundBrush");
     }
 
     private void FitToWorkArea()

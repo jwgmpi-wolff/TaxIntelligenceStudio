@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text.Json;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
 using TaxIntelligenceStudio.Infrastructure.Training;
@@ -7,6 +9,231 @@ namespace TaxIntelligenceStudio.UnitTests;
 
 public sealed class ModelTrainingServiceTests
 {
+    [Fact]
+    public void BuildStartInfo_PassesEveryQueuedDatasetOnceInSelectionOrder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var first = Path.Combine(root, "part-01.jsonl");
+        var second = Path.Combine(root, "part-02.jsonl");
+        var third = Path.Combine(root, "part with spaces.jsonl");
+        var request = new ModelTrainingRequest(
+            "base-model", first, Path.Combine(root, "output"), "python",
+            1, 1, 0.00005m, false, null,
+            AdditionalDatasetPaths: [second, first, third]);
+
+        var info = LocalModelTrainingService.BuildStartInfo(
+            request, "trainer.py", AcceleratorKind.Cpu, "python");
+        var arguments = info.ArgumentList.ToArray();
+        var datasets = arguments.Select((value, index) => (value, index))
+            .Where(item => item.value == "--dataset")
+            .Select(item => arguments[item.index + 1]).ToArray();
+
+        Assert.Equal([first, second, third], datasets);
+        Assert.Single(arguments, argument => argument == "--output");
+    }
+
+    [Fact]
+    public void BuildStartInfo_PreservesCompanionSplitsForEveryQueuedExport()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            foreach (var name in new[] { "first", "second" })
+            {
+                var splits = Path.Combine(root, $"{name}-splits");
+                Directory.CreateDirectory(splits);
+                File.WriteAllText(Path.Combine(root, $"{name}.jsonl"), "{}");
+                File.WriteAllText(Path.Combine(splits, "manifest.json"), "{}");
+                foreach (var split in new[] { "train", "validation", "test" })
+                {
+                    File.WriteAllText(Path.Combine(splits, $"{split}.jsonl"), "{\"messages\":[]}");
+                }
+            }
+            var request = new ModelTrainingRequest(
+                "base-model", Path.Combine(root, "first.jsonl"), Path.Combine(root, "output"),
+                "python", 1, 1, 0.00005m, false, null,
+                AdditionalDatasetPaths: [Path.Combine(root, "second.jsonl")]);
+
+            var info = LocalModelTrainingService.BuildStartInfo(
+                request, "trainer.py", AcceleratorKind.Cpu, "python");
+            var arguments = info.ArgumentList.ToArray();
+            foreach (var flag in new[] { "--dataset", "--validation-dataset", "--test-dataset", "--split-manifest" })
+            {
+                Assert.Equal(2, arguments.Count(argument => argument == flag));
+            }
+            Assert.DoesNotContain(Path.Combine(root, "first.jsonl"), arguments);
+            Assert.DoesNotContain(Path.Combine(root, "second.jsonl"), arguments);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TrainAsync_ReportsMissingQueuedFileBeforeHardwareOrPythonSetup()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var first = Path.Combine(root, "first.jsonl");
+        var missing = Path.Combine(root, "missing.jsonl");
+        File.WriteAllText(first, "{\"messages\":[]}");
+        try
+        {
+            var service = new LocalModelTrainingService(new NpuOnlyHardwareService(), TimeProvider.System);
+            var request = new ModelTrainingRequest(
+                "base-model", first, Path.Combine(root, "output"), "python",
+                1, 1, 0.00005m, false, null, AdditionalDatasetPaths: [missing]);
+
+            var exception = await Assert.ThrowsAsync<FileNotFoundException>(() => service.TrainAsync(request));
+
+            Assert.Equal(missing, exception.FileName);
+            Assert.False(Directory.Exists(request.OutputDirectory));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CompleteTrainingRun_RequiresValidEvaluationAndMatchingAdapterHashes()
+    {
+        var output = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var adapter = Path.Combine(output, "adapter");
+        Directory.CreateDirectory(adapter);
+        var weights = Path.Combine(adapter, "adapter_model.safetensors");
+        var config = Path.Combine(adapter, "adapter_config.json");
+        var evaluation = Path.Combine(output, "evaluation.json");
+        File.WriteAllText(weights, "test weights");
+        File.WriteAllText(config, "{\"base_model_name_or_path\":\"base-model\"}");
+        File.WriteAllText(Path.Combine(output, "training_run.json"), "{}");
+        File.WriteAllText(Path.Combine(output, "run_environment.json"), "{}");
+        File.WriteAllText(evaluation, "{\"status\":\"completed\"}");
+        File.WriteAllText(
+            Path.Combine(output, "artifact_manifest.json"),
+            JsonSerializer.Serialize(new
+            {
+                evaluation_sha256 = Hash(evaluation),
+                adapter_files = new[]
+                {
+                    new
+                    {
+                        file = "adapter_model.safetensors",
+                        bytes = new FileInfo(weights).Length,
+                        sha256 = Hash(weights)
+                    },
+                    new
+                    {
+                        file = "adapter_config.json",
+                        bytes = new FileInfo(config).Length,
+                        sha256 = Hash(config)
+                    }
+                }
+            }));
+        try
+        {
+            Assert.True(LocalModelTrainingService.HasCompleteTrainingRun(output));
+
+            File.AppendAllText(weights, "modified");
+
+            Assert.False(LocalModelTrainingService.HasCompleteTrainingRun(output));
+        }
+        finally
+        {
+            Directory.Delete(output, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildStartInfo_UsesValidatedSplitsWhenManifestExists()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var dataset = Path.Combine(root, "training.jsonl");
+        var splits = Path.Combine(root, "training-splits");
+        Directory.CreateDirectory(splits);
+        File.WriteAllText(dataset, "{}");
+        File.WriteAllText(Path.Combine(splits, "manifest.json"), "{}");
+        File.WriteAllText(Path.Combine(splits, "train.jsonl"), "{\"messages\":[]}");
+        File.WriteAllText(Path.Combine(splits, "validation.jsonl"), "{\"messages\":[]}");
+        File.WriteAllText(Path.Combine(splits, "test.jsonl"), "{\"messages\":[]}");
+        try
+        {
+            var request = new ModelTrainingRequest(
+                "base-model",
+                dataset,
+                Path.Combine(root, "output"),
+                "python",
+                2,
+                1,
+                0.0002m,
+                AllowCpuFallback: false,
+                ResumeCheckpoint: null,
+                Seed: 17,
+                LoraRank: 8,
+                LoraAlpha: 16,
+                LoraDropout: 0.1);
+            var startInfo = LocalModelTrainingService.BuildStartInfo(
+                request,
+                "trainer.py",
+                AcceleratorKind.CudaGpu,
+                "python");
+            var arguments = startInfo.ArgumentList.ToArray();
+
+            Assert.Equal(
+                Path.Combine(splits, "train.jsonl"),
+                arguments[Array.IndexOf(arguments, "--dataset") + 1]);
+            Assert.Contains("--validation-dataset", arguments);
+            Assert.Contains("--test-dataset", arguments);
+            Assert.Equal("17", arguments[Array.IndexOf(arguments, "--seed") + 1]);
+            Assert.Equal("8", arguments[Array.IndexOf(arguments, "--lora-rank") + 1]);
+            Assert.Equal("16", arguments[Array.IndexOf(arguments, "--lora-alpha") + 1]);
+            Assert.Equal("0.1", arguments[Array.IndexOf(arguments, "--lora-dropout") + 1]);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void BuildStartInfo_RefusesEmptyTrainingSplitInsteadOfFallingBackToRawExport()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var dataset = Path.Combine(root, "training.jsonl");
+        var splits = Path.Combine(root, "training-splits");
+        Directory.CreateDirectory(splits);
+        File.WriteAllText(dataset, "{}");
+        File.WriteAllText(Path.Combine(splits, "manifest.json"), "{}");
+        File.WriteAllText(Path.Combine(splits, "train.jsonl"), string.Empty);
+        try
+        {
+            var request = new ModelTrainingRequest(
+                "base-model",
+                dataset,
+                Path.Combine(root, "output"),
+                "python",
+                1,
+                1,
+                0.0002m,
+                AllowCpuFallback: false,
+                ResumeCheckpoint: null);
+
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                LocalModelTrainingService.BuildStartInfo(
+                    request,
+                    "trainer.py",
+                    AcceleratorKind.Cpu,
+                    "python"));
+
+            Assert.Contains("Do not train on the unfiltered full export", exception.Message);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task HardwareDetection_AlwaysReportsCpu()
     {
@@ -185,6 +412,58 @@ public sealed class ModelTrainingServiceTests
     }
 
     [Fact]
+    public void ContainsTrainingArtifacts_DetectsPriorRunsButNotEmptyFolders()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            Assert.False(LocalModelTrainingService.ContainsTrainingArtifacts(root));
+            Directory.CreateDirectory(Path.Combine(root, "checkpoint-14083"));
+            Assert.True(LocalModelTrainingService.ContainsTrainingArtifacts(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TrainerSuccessRequiresNonemptyAdapterMatchingBaseModel()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var adapter = Path.Combine(root, "adapter");
+        Directory.CreateDirectory(adapter);
+        try
+        {
+            await File.WriteAllTextAsync(
+                Path.Combine(adapter, "adapter_config.json"),
+                """{"base_model_name_or_path":"Qwen/Qwen2.5-1.5B-Instruct"}""");
+            await File.WriteAllBytesAsync(
+                Path.Combine(adapter, "adapter_model.safetensors"),
+                [1, 2, 3]);
+
+            Assert.True(LocalModelTrainingService.HasValidAdapterArtifacts(
+                root,
+                "Qwen/Qwen2.5-1.5B-Instruct"));
+            Assert.False(LocalModelTrainingService.HasValidAdapterArtifacts(
+                root,
+                "different-model"));
+
+            await File.WriteAllBytesAsync(
+                Path.Combine(adapter, "adapter_model.safetensors"),
+                []);
+            Assert.False(LocalModelTrainingService.HasValidAdapterArtifacts(
+                root,
+                "Qwen/Qwen2.5-1.5B-Instruct"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AgentModelDiscovery_FindsCompletedAndCheckpointAdapters()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -234,8 +513,8 @@ public sealed class ModelTrainingServiceTests
             catalog.GetFamilies());
         Assert.Contains(
             catalog.GetModels("Qwen"),
-            model => model.ModelId == "Qwen/Qwen2.5-Coder-1.5B-Instruct" &&
-                     model.RecommendedForLaptopGpu);
+            model => model.ModelId == "Qwen/Qwen2.5-1.5B-Instruct");
+        Assert.All(catalog.GetModels("Qwen"), model => Assert.False(model.RecommendedForLaptopGpu));
         Assert.Contains(
             catalog.GetModels("Llama"),
             model => model.ModelId == "meta-llama/Llama-3.1-8B-Instruct");
@@ -400,14 +679,52 @@ public sealed class ModelTrainingServiceTests
         Assert.Contains("class DirectMLAdamW", trainer);
         Assert.Contains("exp_avg.mul_(beta1).add_", trainer);
         Assert.Contains(
+            "dtype = torch.float16 if args.device == \"cuda\" else torch.float32",
+            trainer);
+        Assert.Contains(
             "max_sequence_length = 512 if args.device == \"directml\"",
             trainer);
         Assert.Contains(
             "gradient_checkpointing=args.device == \"directml\"",
             trainer);
         Assert.Contains("trainer_version", trainer);
+        Assert.Contains("loss > 100", trainer);
+        Assert.Contains("loss < 0", trainer);
+        Assert.Contains("Falling back to CPU training", trainer);
+        Assert.Contains("--directml-probe", trainer);
+        Assert.Contains("install_directml_safe_embedding(model)", trainer);
+        Assert.Contains("class ChunkedLinearCrossEntropy(torch.autograd.Function)", trainer);
+        Assert.Contains("def compute_loss(self, model, inputs", trainer);
+        Assert.Contains("def _maybe_log_save_evaluate(self, tr_loss, *args, **kwargs)", trainer);
+        Assert.Contains("Training loss diverged", trainer);
         Assert.DoesNotContain(".lerp_", trainer);
         Assert.DoesNotContain("torch._foreach", trainer);
+    }
+
+    [Fact]
+    public void EmbeddedAgentRuntime_UsesChatTemplateAndRepetitionControls()
+    {
+        const string resourceName =
+            "TaxIntelligenceStudio.Infrastructure.Training.agent_model_runtime.py";
+        using var stream = typeof(AgentModelService).Assembly
+            .GetManifestResourceStream(resourceName);
+
+        Assert.NotNull(stream);
+        using var reader = new StreamReader(stream);
+        var runtime = reader.ReadToEnd();
+
+        Assert.Contains("tokenizer.apply_chat_template(", runtime);
+        Assert.Contains("add_generation_prompt=True", runtime);
+        Assert.Contains("repetition_penalty=1.1", runtime);
+        Assert.Contains("no_repeat_ngram_size=4", runtime);
+        Assert.Contains("most_common_count / len(generated_ids) >= 0.8", runtime);
+        Assert.Contains("Treat this adapter", runtime);
+        Assert.Contains("dtype = torch.float32", runtime);
+        Assert.Contains("digit_count / len(visible_characters) >= 0.8", runtime);
+        Assert.Contains("numeric or non-language output", runtime);
+        Assert.Contains("falling back to CPU inference", runtime);
+        Assert.Contains("--directml-probe", runtime);
+        Assert.Contains("model.disable_adapter()", runtime);
     }
 
     [Fact]
@@ -529,6 +846,12 @@ public sealed class ModelTrainingServiceTests
     public void NpuDetection_DoesNotMatchInputDevices(string name, bool expected) =>
         Assert.Equal(expected, WindowsHardwareAccelerationService.IsNpu(name));
 
+    private static string Hash(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
     private sealed class NpuOnlyHardwareService : IHardwareAccelerationService
     {
         public Task<IReadOnlyCollection<ComputeAccelerator>> DetectAsync(
@@ -540,5 +863,6 @@ public sealed class ModelTrainingServiceTests
             ];
             return Task.FromResult(devices);
         }
+
     }
 }

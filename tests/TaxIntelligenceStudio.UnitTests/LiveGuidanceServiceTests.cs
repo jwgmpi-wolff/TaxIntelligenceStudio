@@ -58,6 +58,24 @@ public sealed class LiveGuidanceServiceTests
         Assert.Contains(GuidanceResponse.Disclaimer, response.Guidance);
     }
 
+    [Fact]
+    public async Task VerifyGuidanceAsync_AuditsMetadataWithoutQuestionText()
+    {
+        const string sensitiveQuestion = "Taxpayer identifier 12-3456789";
+        var auditRepository = new RecordingAuditRepository();
+        var service = new LiveGuidanceService(
+            new StubVerifier(isVerified: true),
+            auditRepository,
+            new FixedTimeProvider());
+
+        await service.VerifyGuidanceAsync(
+            new GuidanceRequest(sensitiveQuestion, [CreateSource()]));
+
+        var audit = Assert.Single(auditRepository.Entries);
+        Assert.DoesNotContain(sensitiveQuestion, audit.InputJson, StringComparison.Ordinal);
+        Assert.Contains("\"SourceCount\":1", audit.InputJson, StringComparison.Ordinal);
+    }
+
     private static AuthoritativeSource CreateSource() =>
         new(
             new Uri("https://www.irs.gov/publications/p17"),

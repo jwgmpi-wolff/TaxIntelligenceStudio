@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
 using TaxIntelligenceStudio.Infrastructure.Persistence;
+using TaxIntelligenceStudio.Infrastructure.Inference;
 using UglyToad.PdfPig;
 
 namespace TaxIntelligenceStudio.Infrastructure.Knowledge;
@@ -14,7 +15,8 @@ namespace TaxIntelligenceStudio.Infrastructure.Knowledge;
 public sealed partial class IrsKnowledgeIngestionService(
     IHttpClientFactory httpClientFactory,
     TaxIntelligenceDbContext dbContext,
-    TimeProvider timeProvider) : IIrsKnowledgeIngestionService
+    TimeProvider timeProvider,
+    ModelProviderOptions modelProviderOptions) : IIrsKnowledgeIngestionService
 {
     private static readonly Uri Root = new("https://www.irs.gov/");
     private static readonly Uri DefaultSitemap = new("https://www.irs.gov/sitemap.xml");
@@ -24,6 +26,12 @@ public sealed partial class IrsKnowledgeIngestionService(
         IProgress<CrawlProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        if (modelProviderOptions.OfflineMode)
+        {
+            throw new InvalidOperationException(
+                "IRS source refresh is unavailable while offline mode is enabled.");
+        }
+
         if (maximumDocuments < 0)
         {
             throw new ArgumentOutOfRangeException(

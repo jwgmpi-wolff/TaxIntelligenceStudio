@@ -91,6 +91,9 @@ The solution follows a layered desktop architecture:
   DirectML LoRA on AMD, Intel, Qualcomm, or non-CUDA NVIDIA GPUs, and requires
   explicit consent before CPU fallback. The trainer detects the Python
   interpreter's architecture and reports an unusable interpreter by name.
+- Shared Azure OpenAI and loopback-first local OpenAI-compatible inference
+  providers, explicit provider resolution, offline blocking, and prompt-free
+  model inference audit metadata.
 - Multi-file PDF, CSV, XLSX, XLSM, and TXT financial import.
 - Per-file parse diagnostics with automatic live IRS-verified analysis after
   successful record extraction; unsupported or ambiguous layouts are reported
@@ -116,6 +119,15 @@ The solution follows a layered desktop architecture:
   1040, Schedules A/B/C/D/E, Form 8949, and Form 8889 as applicable.
 - Evidence-linked deduction and loss-review opportunities.
 - PDF and Microsoft Word tax-analysis workpaper export.
+- Formatted PDF and Word (.docx) export of the latest inference response or
+  full conversation, including model details, citation URLs and warnings.
+  These AI-generated exports are separate from verified analysis workpapers.
+- Persistent local inference prompt history with reuse, delete and clear
+  controls. Sent typed prompts survive app restarts; attachment excerpts and
+  model replies are excluded from this history.
+- Concurrent training and inference in one desktop window, with independent
+  cancellation and progress. Both share the machine's available CPU/GPU and
+  memory; inference continues using the activated model until you change it.
 - Live HTTPS verification restricted to `irs.gov`, `treasury.gov`, and
   `federalregister.gov`.
 - Explicit `no-store`, `no-cache`, and zero-age request and response policies.
@@ -133,6 +145,13 @@ The solution follows a layered desktop architecture:
   publishing, Start Menu/Desktop shortcut creation, and uninstall.
 
 ## Financial document handling
+
+The desktop uses a low-glare navy theme with soft white text, layered blue
+input/table surfaces, and light-green focus, selection and progress accents.
+Primary green buttons use dark navy text for contrast. The theme is consistent
+across all workflow tabs and is independent of the Windows accent color.
+Dropdowns have light-green frames; their options have individual borders with
+light-green outlines for highlighted and selected entries.
 
 The importer uses the strongest available local evidence in this order:
 
@@ -313,7 +332,12 @@ git push origin v1.0.0
 
 The `.github/workflows/release.yml` workflow runs the tests, publishes
 self-contained builds for `win-x64` and `win-arm64`, and attaches them to a
-GitHub release. It can also be started manually, which requires the tag to
+GitHub release along with `TaxIntelligenceStudio-Installer.zip` (the bootstrap
+installer and uninstall scripts) and `SHA256SUMS.txt` for all ZIP assets.
+Extract the installer ZIP and run `Install.cmd`; access to this private GitHub
+repository is required to download the matching application package.
+Model weights, adapters, datasets, and local application data are not bundled.
+It can also be started manually, which requires the tag to
 publish as an input:
 
 ```powershell
@@ -573,10 +597,43 @@ compatibility manifest, so an older incompatible checkpoint is never resumed
 silently.
 
 Enter a local Hugging Face-compatible model folder or model identifier, select
-the exported IRS JSONL dataset, choose an output directory, and start training.
+**Add datasets...** in **Model Trainer**, choose one or multiple JSONL files
+with Ctrl/Shift selection, choose an output directory, and start training.
+You can add files from multiple folders, remove selected entries, or clear
+the queue. All queued files feed **one fine-tuning run and one adapter**;
+they are not separate jobs. The trainer logs each file's record count and
+excludes exact duplicate examples across files. Companion validated splits
+remain held out; conflicting source-document split assignments are rejected.
+See [local training](./docs/LOCAL_MODEL_TRAINING.md) for resume and split rules.
 The application uses CUDA when an NVIDIA CUDA runtime is detected, otherwise it
 uses the platform GPU through PyTorch DirectML. CPU fallback is disabled unless
 explicitly selected.
+
+The **Export citation-grounded training dataset** command creates
+SFT chat-completion JSONL encoded as UTF-8 without a byte-order mark, so strict
+JSONL upload parsers can read the first record. Each line contains only the
+supported top-level `messages` field; source citations remain in the assistant
+content. Re-export the dataset after updating the application before uploading
+it to Foundry. Choose supervised fine-tuning (SFT), not DPO or RFT, for this format.
+
+Foundry limits each training file to less than 512 MB. If the full export exceeds
+450 MB, the app also creates a uniquely named sibling `*-foundry-*` folder with
+JSONL parts of at most 450 MB each. The export status shows this folder. Upload a
+part rather than the oversized full file; each part is a separate subset, not an
+automatic multi-file training job. The original full export is retained for
+local training.
+
+In **IRS Knowledge**, set **Dataset file count** before exporting: `0` keeps
+automatic size-based splitting; a positive whole number creates exactly that
+many non-empty JSONL files, balanced by record count (counts differ by at most
+one). All records are preserved in source order. The full local-training export
+is retained alongside the uniquely named parts folder. Counts larger than the
+number of records are rejected. If a selected count produces any file above
+450 MB, choose more files or automatic splitting; no records are truncated.
+This setting applies to subsequent exports, not a running crawl or training job.
+Every successful export also writes a `.manifest.json` with SHA-256 hashes and a
+`.validation-report.json` after validating each JSONL record's chat-message
+shape.
 
 Training writes a complete checkpoint every 10 optimizer steps and retains the
 10 most recent checkpoints. After an interruption, choose the output directory,
@@ -620,6 +677,57 @@ Use **Run real accelerator self-test** to execute two measured workloads:
 - an ONNX graph assigned to the Qualcomm QNN HTP execution provider, with
   profiling used to confirm that at least one node actually ran on the Hexagon
   NPU rather than silently falling back to CPU.
+
+## Model provider inference
+
+The **Model Inference** tab and optional service API can use the project's
+active PEFT adapter (**Trained**), a configured Azure OpenAI deployment, or a
+local OpenAI-compatible endpoint (**Local**). The desktop defaults to
+**Trained** and uses the adapter activated in **Agent Model**, with locally
+cached base weights and an installed training Python environment. Provider
+selection is explicit: an unavailable provider fails rather than falling back
+to another provider. Local endpoints must use loopback by default. Azure keys
+are read from `TAXINTELLIGENCE_AZURE_OPENAI_API_KEY` (or the configured
+environment-variable name); never place credentials in appsettings files.
+
+Configure `ModelProviders` in the desktop or service `appsettings.json`.
+Settings files contain placeholders, and the local `ModelId` and Azure endpoint
+and deployment must be configured by the operator. The local server must
+already be running; this feature does not download model weights or start the
+runtime. Selecting Azure transmits prompts to the configured cloud deployment.
+
+The service exposes:
+
+- `GET /api/models/providers`
+- `GET /api/models/offline`
+- `POST /api/models/chat?providerId=Local` or `providerId=Azure`
+
+The shared internal request can include verified HTTPS source context, but the
+public service API does not accept client-supplied evidence text or trust
+assertions. The desktop application searches the current local corpus for
+matching authoritative-source passages; a response without verified context
+is explicitly warned as unverified tax information. Follow-up messages in the
+desktop tab retain the current conversation in memory until **New
+conversation** is selected or the app closes. **Trained** connects the PEFT
+adapter to this conversation and retrieval workflow; **Local** does not
+automatically apply the project's adapter to an Ollama model.
+
+Use **Add images/documents...** in the inference tab to attach images, PDFs,
+DOCX, XLSX, TXT, or CSV files. Extraction and Windows OCR run locally.
+Image options include non-identifying face detection and optional object/scene
+descriptions through an installed local vision model. Review extracted content
+before sending: excerpts become part of the conversation, not training data.
+Selecting Azure for chat sends those excerpts to Azure. See
+[attachment support and limits](./docs/LOCAL_MODEL_INFERENCE.md#images-and-document-attachments-desktop).
+
+Set `ModelProviders:OfflineMode` to `true` to block cloud inference, IRS source
+refresh, and live source verification. Inference can search the local corpus
+in either mode; cached passages may be stale, and the local model endpoint must
+already be running.
+See [model setup](./docs/LOCAL_MODEL_SETUP.md),
+[provider inference](./docs/LOCAL_MODEL_INFERENCE.md),
+[offline limitations](./docs/OFFLINE_MODE.md), and
+[the repository gap analysis](./docs/LOCAL_MODEL_GAP_ANALYSIS.md).
 
 ## Results collector container
 

@@ -16,7 +16,8 @@ public partial class App : System.Windows.Application
     public App()
     {
         _host = Host.CreateDefaultBuilder()
-            .ConfigureServices(services =>
+            .UseContentRoot(AppContext.BaseDirectory)
+            .ConfigureServices((context, services) =>
             {
                 var dataDirectory = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -24,8 +25,11 @@ public partial class App : System.Windows.Application
                 Directory.CreateDirectory(dataDirectory);
 
                 services.AddTaxIntelligenceInfrastructure(
-                    Path.Combine(dataDirectory, "tax-intelligence.db"));
+                    Path.Combine(dataDirectory, "tax-intelligence.db"),
+                    context.Configuration);
                 services.AddSingleton<IPdfOcrService, WindowsPdfOcrService>();
+                services.AddTransient<IImageAttachmentAnalyzer, WindowsImageAttachmentAnalyzer>();
+                services.AddTransient<IInferenceAttachmentService, TaxIntelligenceStudio.Infrastructure.Inference.InferenceAttachmentService>();
                 services.AddTransient<MainViewModel>();
                 services.AddTransient<MainWindow>();
             })
@@ -34,6 +38,9 @@ public partial class App : System.Windows.Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        Wpf.Ui.Appearance.ApplicationAccentColorManager.Apply(
+            (System.Windows.Media.Color)FindResource("ComfortAccentColor"),
+            Wpf.Ui.Appearance.ApplicationTheme.Dark);
         base.OnStartup(e);
         await _host.StartAsync();
         await _host.Services.InitializeTaxIntelligenceDatabaseAsync();

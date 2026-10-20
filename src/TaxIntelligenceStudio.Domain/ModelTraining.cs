@@ -32,7 +32,16 @@ public sealed record ModelTrainingRequest(
     int BatchSize,
     decimal LearningRate,
     bool AllowCpuFallback,
-    string? ResumeCheckpoint);
+    string? ResumeCheckpoint,
+    int Seed = 42,
+    int LoraRank = 16,
+    int LoraAlpha = 32,
+    double LoraDropout = 0.05,
+    int? MaximumSequenceLength = null,
+    IReadOnlyList<string>? AdditionalDatasetPaths = null)
+{
+    public IReadOnlyList<string> DatasetPaths => [DatasetPath, .. AdditionalDatasetPaths ?? []];
+}
 
 public sealed record ModelTrainingCheckpoint(
     string DisplayName,

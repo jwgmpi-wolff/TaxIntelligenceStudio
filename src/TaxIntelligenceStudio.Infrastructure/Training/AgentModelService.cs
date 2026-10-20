@@ -169,6 +169,49 @@ public sealed partial class AgentModelService(
             return ollamaOutput.Trim();
         }
 
+        return await RunAdapterAsync(model, prompt, null, configuredPython, progress, cancellationToken);
+    }
+
+    public Task<string> InferChatAsync(
+        ActiveAgentModel model,
+        ModelInferenceRequest request,
+        string configuredPython,
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null)
+    {
+        if (model.Runtime != TransformersRuntime)
+        {
+            throw new InvalidOperationException(
+                "Trained chat requires a Transformers / PEFT adapter activated in Agent Model.");
+        }
+
+        var payload = TaxIntelligenceStudio.Infrastructure.Inference.OpenAiCompatibleProtocol.CreatePayload(
+            request with { MaximumOutputTokens = request.MaximumOutputTokens ?? 512 },
+            model.BaseModel,
+            supportsSeed: true);
+        var runtimeProgress = new Progress<string>(line =>
+        {
+            if (line.StartsWith("Loading ", StringComparison.Ordinal) ||
+                line.StartsWith("Applying trained adapter:", StringComparison.Ordinal) ||
+                line.StartsWith("Generating through ", StringComparison.Ordinal) ||
+                line.StartsWith("DirectML returned ", StringComparison.Ordinal) ||
+                line.StartsWith("Using compatible Python environment:", StringComparison.Ordinal))
+            {
+                progress?.Report(line);
+            }
+        });
+        return RunAdapterAsync(
+            model, null, JsonSerializer.Serialize(payload), configuredPython, runtimeProgress, cancellationToken);
+    }
+
+    private async Task<string> RunAdapterAsync(
+        ActiveAgentModel model,
+        string? prompt,
+        string? requestJson,
+        string configuredPython,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
         var candidate = new AgentModelCandidate(
             model.BaseModel,
             model.BaseModel,
@@ -187,7 +230,8 @@ public sealed partial class AgentModelService(
             configuredPython,
             accelerator.Kind,
             progress,
-            cancellationToken);
+            cancellationToken,
+            allowRepair: requestJson is null);
         var scriptPath = await ExtractRuntimeAsync(cancellationToken);
         var startInfo = CreateStartInfo(python);
         startInfo.ArgumentList.Add(scriptPath);
@@ -196,8 +240,16 @@ public sealed partial class AgentModelService(
         startInfo.ArgumentList.Add(model.BaseModel);
         startInfo.ArgumentList.Add("--adapter");
         startInfo.ArgumentList.Add(model.AdapterPath);
-        startInfo.ArgumentList.Add("--prompt");
-        startInfo.ArgumentList.Add(prompt);
+        if (requestJson is null)
+        {
+            startInfo.ArgumentList.Add("--prompt");
+            startInfo.ArgumentList.Add(prompt!);
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("--request-stdin");
+            startInfo.ArgumentList.Add("--local-files-only");
+        }
         startInfo.ArgumentList.Add("--device");
         startInfo.ArgumentList.Add(accelerator.Kind switch
         {
@@ -205,7 +257,7 @@ public sealed partial class AgentModelService(
             AcceleratorKind.DirectMlGpu => "directml",
             _ => "cpu"
         });
-        var output = await ExecuteAsync(startInfo, progress, cancellationToken);
+        var output = await ExecuteAsync(startInfo, progress, cancellationToken, requestJson);
         var resultLine = output.Split(
                 ['\r', '\n'],
                 StringSplitOptions.RemoveEmptyEntries)
@@ -409,8 +461,17 @@ public sealed partial class AgentModelService(
     private static async Task<string> ExecuteAsync(
         ProcessStartInfo startInfo,
         IProgress<string>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? standardInput = null)
     {
+        startInfo.RedirectStandardInput = standardInput is not null;
+        startInfo.StandardOutputEncoding = Encoding.UTF8;
+        startInfo.StandardErrorEncoding = Encoding.UTF8;
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
+        if (standardInput is not null)
+        {
+            startInfo.StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        }
         var output = new StringBuilder();
         using var process = new Process { StartInfo = startInfo };
         process.OutputDataReceived += (_, args) =>
@@ -454,6 +515,11 @@ public sealed partial class AgentModelService(
         process.BeginErrorReadLine();
         try
         {
+            if (standardInput is not null)
+            {
+                await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken);
+                process.StandardInput.Close();
+            }
             await process.WaitForExitAsync(cancellationToken);
         }
         catch (OperationCanceledException)

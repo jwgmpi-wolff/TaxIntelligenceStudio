@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using Microsoft.Win32;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
 using TaxIntelligenceStudio.Infrastructure.Training;
+using TaxIntelligenceStudio.Infrastructure.Inference;
 
 namespace TaxIntelligenceStudio.Desktop.ViewModels;
 
@@ -21,12 +23,21 @@ public partial class MainViewModel(
     IModelTrainingService modelTrainingService,
     IModelCatalogService modelCatalogService,
     IAcceleratorSelfTestService acceleratorSelfTestService,
-    IAgentModelService agentModelService) : ObservableObject
+    IAgentModelService agentModelService,
+    IModelInferenceService modelInferenceService,
+    IModelProviderResolver modelProviderResolver,
+    IInferenceAttachmentService inferenceAttachments,
+    IInferenceReportService inferenceReports,
+    IInferencePromptHistory promptHistory,
+    ModelProviderOptions modelProviderOptions) : ObservableObject
 {
     private TaxAnalysisResult? _analysis;
+    private readonly List<ModelChatMessage> _modelInferenceConversation = [];
+    private readonly List<ModelInferenceTurn> _modelInferenceTurns = [];
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsNotBusy))]
+    [NotifyPropertyChangedFor(nameof(CanEditTraining))]
     [NotifyCanExecuteChangedFor(nameof(CrawlCommand))]
     [NotifyCanExecuteChangedFor(nameof(ExportDatasetCommand))]
     [NotifyCanExecuteChangedFor(nameof(ImportFilesCommand))]
@@ -38,10 +49,30 @@ public partial class MainViewModel(
     [NotifyCanExecuteChangedFor(nameof(DiscoverAgentModelsCommand))]
     [NotifyCanExecuteChangedFor(nameof(ActivateAgentModelCommand))]
     [NotifyCanExecuteChangedFor(nameof(TestAgentModelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RefreshModelProvidersCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RunModelInferenceCommand))]
+    [NotifyCanExecuteChangedFor(nameof(NewModelConversationCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RemoveTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ClearTrainingDatasetsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingOutputCommand))]
+    [NotifyCanExecuteChangedFor(nameof(TrainModelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(AddInferenceAttachmentsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RemoveInferenceAttachmentCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ClearInferenceAttachmentsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ExportInferencePdfCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ExportInferenceWordCommand))]
+    [NotifyCanExecuteChangedFor(nameof(LoadPromptHistoryCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ReusePromptCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeletePromptCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ClearPromptHistoryCommand))]
     private bool _isBusy;
 
     [ObservableProperty]
     private int _maximumDocuments = 100;
+
+    [ObservableProperty]
+    private string _datasetFileCount = "0";
 
     [ObservableProperty]
     private string _knowledgeStatus =
@@ -66,12 +97,12 @@ public partial class MainViewModel(
     private string _reportStatus = "Analyze imported records before exporting a report.";
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(TrainModelCommand))]
-    private string _trainingDatasetPath = string.Empty;
+    [NotifyCanExecuteChangedFor(nameof(RemoveTrainingDatasetCommand))]
+    private string? _selectedTrainingDataset;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(TrainModelCommand))]
-    private string _baseModel = "Qwen/Qwen2.5-Coder-1.5B-Instruct";
+    private string _baseModel = "Qwen/Qwen2.5-1.5B-Instruct";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AvailableBaseModels))]
@@ -99,7 +130,7 @@ public partial class MainViewModel(
 
     [ObservableProperty]
     private string _trainingStatus =
-        "Detect hardware, select the exported JSONL dataset, and enter a local path or Hugging Face model ID.";
+        "Detect hardware, add JSONL datasets, and enter a local path or Hugging Face model ID. All queued files feed one training run.";
 
     [ObservableProperty]
     private double _trainingProgress;
@@ -140,11 +171,151 @@ public partial class MainViewModel(
         "Discover a completed adapter or training checkpoint, then activate it for local agent use.";
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(RunModelInferenceCommand))]
+    private string _modelInferencePrompt = string.Empty;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ReusePromptCommand))]
+    [NotifyCanExecuteChangedFor(nameof(DeletePromptCommand))]
+    private SavedInferencePrompt? _selectedSavedPrompt;
+
+    [ObservableProperty]
+    private string _promptHistoryStatus =
+        "Typed prompts are saved locally when sent. Attachment excerpts and replies are not saved here.";
+
+    public ObservableCollection<SavedInferencePrompt> SavedPrompts { get; } = [];
+
+    private bool CanUseSavedPrompt() => IsNotBusy && SelectedSavedPrompt is not null;
+
+    [RelayCommand(CanExecute = nameof(IsNotBusy))]
+    private async Task LoadPromptHistoryAsync(CancellationToken cancellationToken)
+    {
+        IsBusy = true;
+        try
+        {
+            Replace(SavedPrompts, await promptHistory.GetAsync(cancellationToken));
+            PromptHistoryStatus = $"{SavedPrompts.Count} saved prompt(s). Stored locally, including any private text you typed.";
+        }
+        catch (Exception exception)
+        {
+            PromptHistoryStatus = $"Cannot load prompt history: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanUseSavedPrompt))]
+    private void ReusePrompt()
+    {
+        ModelInferencePrompt = SelectedSavedPrompt!.Prompt;
+        PromptHistoryStatus = "Saved prompt copied to your message. Review it before sending; no attachments were restored.";
+    }
+
+    [RelayCommand(CanExecute = nameof(CanUseSavedPrompt))]
+    private Task DeletePromptAsync(CancellationToken cancellationToken) =>
+        RemovePromptHistoryAsync(false, cancellationToken);
+
+    [RelayCommand(CanExecute = nameof(IsNotBusy))]
+    private Task ClearPromptHistoryAsync(CancellationToken cancellationToken) =>
+        RemovePromptHistoryAsync(true, cancellationToken);
+
+    private async Task RemovePromptHistoryAsync(bool clearAll, CancellationToken cancellationToken)
+    {
+        if (clearAll && System.Windows.MessageBox.Show(
+                "Delete all saved inference prompts? This cannot be undone.",
+                "Clear prompt history", System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning) != System.Windows.MessageBoxResult.Yes)
+        {
+            return;
+        }
+        IsBusy = true;
+        try
+        {
+            if (clearAll)
+            {
+                await promptHistory.ClearAsync(cancellationToken);
+            }
+            else
+            {
+                await promptHistory.DeleteAsync(SelectedSavedPrompt!.Id, cancellationToken);
+            }
+            SelectedSavedPrompt = null;
+            Replace(SavedPrompts, await promptHistory.GetAsync(cancellationToken));
+            PromptHistoryStatus = $"History updated: {SavedPrompts.Count} saved prompt(s).";
+        }
+        catch (Exception exception)
+        {
+            PromptHistoryStatus = $"Cannot delete prompt history: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [ObservableProperty]
+    private string _selectedInferenceProvider = modelProviderOptions.DefaultProvider;
+
+    [ObservableProperty]
+    private string _modelInferenceResponse = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEditTraining))]
+    [NotifyCanExecuteChangedFor(nameof(TrainModelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RemoveTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ClearTrainingDatasetsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingOutputCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RefreshCheckpointsCommand))]
+    private bool _isInferenceRunning;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanEditTraining))]
+    [NotifyCanExecuteChangedFor(nameof(TrainModelCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RemoveTrainingDatasetCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ClearTrainingDatasetsCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ChooseTrainingOutputCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RefreshCheckpointsCommand))]
+    private bool _isTraining;
+
+    [ObservableProperty]
+    private string _modelInferenceElapsed = string.Empty;
+
+    [ObservableProperty]
+    private bool _exportFullInferenceConversation;
+
+    [ObservableProperty]
+    private string _inferenceExportStatus =
+        "Export the latest completed response, or include the full conversation. Exports may contain private information.";
+
+    [ObservableProperty]
+    private bool _detectAttachmentFaces = true;
+
+    [ObservableProperty]
+    private bool _describeAttachmentObjects;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(RemoveInferenceAttachmentCommand))]
+    private InferenceAttachment? _selectedInferenceAttachment;
+
+    [ObservableProperty]
+    private string _inferenceAttachmentStatus =
+        "Attach images, PDF, DOCX, XLSX, TXT or CSV. OCR is local. Optional face detection does not identify people.";
+
+    [ObservableProperty]
+    private string _modelProviderStatus =
+        "Choose a configured provider and check its availability before sending a request.";
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ActiveAgentModelSummary))]
     [NotifyCanExecuteChangedFor(nameof(TestAgentModelCommand))]
     private ActiveAgentModel? _activeAgentModel = agentModelService.GetActiveModel();
 
     public bool IsNotBusy => !IsBusy;
+    public bool CanEditTraining => !IsTraining && (!IsBusy || IsInferenceRunning);
     public ObservableCollection<FinancialTransaction> Transactions { get; } = [];
     public ObservableCollection<FinancialFileImport> FinancialFileImports { get; } = [];
     public ObservableCollection<TaxMapping> Mappings { get; } = [];
@@ -154,6 +325,12 @@ public partial class MainViewModel(
         [NewTrainingCheckpoint];
     public ObservableCollection<AgentModelCandidate> AgentModels { get; } =
         new(agentModelService.DiscoverModels(DefaultAgentModelRoot));
+    public ObservableCollection<ModelProviderAvailability> ModelProviders { get; } = [];
+    public ObservableCollection<InferenceAttachment> InferenceAttachmentItems { get; } = [];
+    public ObservableCollection<string> TrainingDatasetPaths { get; } = [];
+    public string TrainingDatasetSummary =>
+        $"{TrainingDatasetPaths.Count} dataset file(s) queued for one training run";
+    public IReadOnlyCollection<string> ModelProviderIds { get; } = ["Trained", "Local", "Azure"];
     public IReadOnlyCollection<string> AgentRuntimes { get; } =
         ["Transformers / PEFT", "Ollama"];
     public string ActiveAgentModelSummary => ActiveAgentModel is null
@@ -211,6 +388,11 @@ public partial class MainViewModel(
     [RelayCommand(CanExecute = nameof(IsNotBusy))]
     private async Task ExportDatasetAsync(CancellationToken cancellationToken)
     {
+        if (!int.TryParse(DatasetFileCount, out var datasetFileCount) || datasetFileCount < 0)
+        {
+            KnowledgeStatus = "Dataset file count must be a whole number of 0 or greater. Use 0 for automatic splitting.";
+            return;
+        }
         var dialog = new SaveFileDialog
         {
             Title = "Export citation-grounded training dataset",
@@ -227,10 +409,21 @@ public partial class MainViewModel(
         IsBusy = true;
         try
         {
-            var records = await datasetExportService.ExportJsonLinesAsync(
+            var result = await datasetExportService.ExportJsonLinesAsync(
                 dialog.FileName,
+                datasetFileCount,
                 cancellationToken);
-            KnowledgeStatus = $"Exported {records:N0} grounded training records to {dialog.FileName}.";
+            KnowledgeStatus = $"Exported {result.RecordCount:N0} grounded training records to {dialog.FileName}." +
+                $"{Environment.NewLine}Manifest: {result.ManifestPath}{Environment.NewLine}SHA-256: {result.Sha256}" +
+                $"{Environment.NewLine}Leakage-resistant training splits: {result.TrainingSplits?.TrainingFile}" +
+                $"{Environment.NewLine}Validation/test records: {result.TrainingSplits?.ValidationRecordCount:N0}/" +
+                $"{result.TrainingSplits?.TestRecordCount:N0}; duplicate/PII exclusions: " +
+                $"{result.TrainingSplits?.DuplicateExcludedCount:N0}/{result.TrainingSplits?.PiiExcludedCount:N0} " +
+                (datasetFileCount > 0 || result.UploadFiles.Count > 1
+                    ? $"{Environment.NewLine}Created {result.UploadFiles.Count} dataset files in " +
+                      $"{Path.GetDirectoryName(result.UploadFiles[0])}. Upload these byte/count parts if needed; " +
+                      "they are not ML train/validation/test splits."
+                    : string.Empty);
         }
         catch (Exception exception)
         {
@@ -494,22 +687,64 @@ public partial class MainViewModel(
             }
         }
 
-        [RelayCommand]
+        [RelayCommand(CanExecute = nameof(CanEditTraining))]
         private void ChooseTrainingDataset()
         {
             var dialog = new OpenFileDialog
             {
-                Title = "Select grounded IRS training dataset",
+                Title = "Add JSONL datasets to the training queue",
                 Filter = "JSON Lines (*.jsonl)|*.jsonl",
-                CheckFileExists = true
+                CheckFileExists = true,
+                Multiselect = true
             };
             if (dialog.ShowDialog() == true)
             {
-                TrainingDatasetPath = dialog.FileName;
+                foreach (var path in dialog.FileNames)
+                {
+                    var fullPath = Path.GetFullPath(path);
+                    if (!TrainingDatasetPaths.Contains(fullPath, StringComparer.OrdinalIgnoreCase))
+                    {
+                        TrainingDatasetPaths.Add(fullPath);
+                    }
+                }
+                SelectedTrainingDataset = TrainingDatasetPaths.LastOrDefault();
+                NotifyTrainingDatasetsChanged();
             }
         }
 
-        [RelayCommand]
+        private bool CanRemoveTrainingDataset() =>
+            CanEditTraining && SelectedTrainingDataset is not null;
+
+        [RelayCommand(CanExecute = nameof(CanRemoveTrainingDataset))]
+        private void RemoveTrainingDataset()
+        {
+            if (SelectedTrainingDataset is not null)
+            {
+                TrainingDatasetPaths.Remove(SelectedTrainingDataset);
+            }
+            SelectedTrainingDataset = TrainingDatasetPaths.LastOrDefault();
+            NotifyTrainingDatasetsChanged();
+        }
+
+        private bool CanClearTrainingDatasets() => CanEditTraining && TrainingDatasetPaths.Count > 0;
+
+        [RelayCommand(CanExecute = nameof(CanClearTrainingDatasets))]
+        private void ClearTrainingDatasets()
+        {
+            TrainingDatasetPaths.Clear();
+            SelectedTrainingDataset = null;
+            NotifyTrainingDatasetsChanged();
+        }
+
+        private void NotifyTrainingDatasetsChanged()
+        {
+            OnPropertyChanged(nameof(TrainingDatasetSummary));
+            TrainModelCommand.NotifyCanExecuteChanged();
+            RemoveTrainingDatasetCommand.NotifyCanExecuteChanged();
+            ClearTrainingDatasetsCommand.NotifyCanExecuteChanged();
+        }
+
+        [RelayCommand(CanExecute = nameof(CanEditTraining))]
         private void ChooseTrainingOutput()
         {
             var dialog = new OpenFolderDialog
@@ -525,7 +760,7 @@ public partial class MainViewModel(
         }
 
         private bool CanRefreshCheckpoints() =>
-            IsNotBusy && !string.IsNullOrWhiteSpace(TrainingOutputDirectory);
+            CanEditTraining && !string.IsNullOrWhiteSpace(TrainingOutputDirectory);
 
         [RelayCommand(CanExecute = nameof(CanRefreshCheckpoints))]
         private void RefreshCheckpoints()
@@ -546,15 +781,15 @@ public partial class MainViewModel(
         }
 
         private bool CanTrainModel() =>
-            IsNotBusy &&
+            CanEditTraining &&
             !string.IsNullOrWhiteSpace(BaseModel) &&
-            File.Exists(TrainingDatasetPath) &&
+            TrainingDatasetPaths.Count > 0 &&
             !string.IsNullOrWhiteSpace(TrainingOutputDirectory);
 
-        [RelayCommand(CanExecute = nameof(CanTrainModel))]
+        [RelayCommand(CanExecute = nameof(CanTrainModel), IncludeCancelCommand = true)]
         private async Task TrainModelAsync(CancellationToken cancellationToken)
         {
-            IsBusy = true;
+            IsTraining = true;
             TrainingProgress = 0;
             TrainingProgressText = "Starting training preflight";
             try
@@ -570,14 +805,15 @@ public partial class MainViewModel(
                 var result = await modelTrainingService.TrainAsync(
                     new ModelTrainingRequest(
                         BaseModel.Trim(),
-                        TrainingDatasetPath,
+                        TrainingDatasetPaths[0],
                         TrainingOutputDirectory,
                         PythonExecutable,
                         Epochs: 1,
                         BatchSize: 1,
-                        LearningRate: 0.0002m,
+                        LearningRate: 0.00005m,
                         AllowCpuFallback,
-                        SelectedCheckpoint?.Path),
+                        SelectedCheckpoint?.Path,
+                        AdditionalDatasetPaths: TrainingDatasetPaths.Skip(1).ToArray()),
                     progress,
                     cancellationToken);
                 TrainingStatus = result.Succeeded
@@ -595,6 +831,11 @@ public partial class MainViewModel(
                     TrainingProgressText = "Training failed";
                 }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                TrainingStatus = "Training cancelled. Inference and earlier conversation were not cancelled.";
+                TrainingProgressText = "Training cancelled";
+            }
             catch (Exception exception)
             {
                 TrainingStatus = $"Training did not start or failed: {exception.Message}";
@@ -602,7 +843,7 @@ public partial class MainViewModel(
             }
             finally
             {
-                IsBusy = false;
+                IsTraining = false;
                 RefreshCheckpoints();
         }
     }
@@ -717,6 +958,302 @@ public partial class MainViewModel(
         AgentStatus = AgentStatus.Length > 12_000
             ? message
             : $"{AgentStatus}{Environment.NewLine}{message}";
+    }
+
+    private bool CanRunModelInference() =>
+        IsNotBusy && (!string.IsNullOrWhiteSpace(ModelInferencePrompt) || InferenceAttachmentItems.Count > 0);
+
+    [RelayCommand(CanExecute = nameof(IsNotBusy), IncludeCancelCommand = true)]
+    private async Task AddInferenceAttachmentsAsync(CancellationToken cancellationToken)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Add images or documents to the next inference message",
+            Filter = "Supported attachments|*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.pdf;*.docx;*.xlsx;*.txt;*.csv",
+            Multiselect = true,
+            CheckFileExists = true
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        if (InferenceAttachmentItems.Count + dialog.FileNames.Length > InferenceAttachmentContext.MaximumAttachments)
+        {
+            InferenceAttachmentStatus = $"At most {InferenceAttachmentContext.MaximumAttachments} attachments are allowed per message. Remove files first.";
+            return;
+        }
+        IsBusy = true;
+        var acceptingProgress = true;
+        try
+        {
+            var progress = new Progress<string>(message =>
+            {
+                if (acceptingProgress)
+                {
+                    InferenceAttachmentStatus = message;
+                }
+            });
+            foreach (var path in dialog.FileNames)
+            {
+                InferenceAttachmentStatus = $"Processing {Path.GetFileName(path)} locally. Vision model loading can take several minutes...";
+                var attachment = await inferenceAttachments.ExtractAsync(
+                    path, new InferenceAttachmentOptions(DetectAttachmentFaces, DescribeAttachmentObjects),
+                    progress, cancellationToken);
+                InferenceAttachmentContext.Append(string.Empty, [.. InferenceAttachmentItems, attachment]);
+                InferenceAttachmentItems.Add(attachment);
+                SelectedInferenceAttachment = attachment;
+            }
+            InferenceAttachmentStatus = $"{InferenceAttachmentItems.Count} attachment(s) ready. Review extracted text below before sending.";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            InferenceAttachmentStatus = "Attachment processing cancelled. Already processed files are retained.";
+        }
+        catch (Exception exception)
+        {
+            InferenceAttachmentStatus = $"Attachment processing failed: {exception.Message} Already processed files are retained.";
+        }
+        finally
+        {
+            acceptingProgress = false;
+            IsBusy = false;
+            NotifyInferenceAttachmentsChanged();
+        }
+    }
+
+    private bool CanRemoveInferenceAttachment() => IsNotBusy && SelectedInferenceAttachment is not null;
+
+    [RelayCommand(CanExecute = nameof(CanRemoveInferenceAttachment))]
+    private void RemoveInferenceAttachment()
+    {
+        if (SelectedInferenceAttachment is not null)
+        {
+            InferenceAttachmentItems.Remove(SelectedInferenceAttachment);
+        }
+        SelectedInferenceAttachment = InferenceAttachmentItems.LastOrDefault();
+        InferenceAttachmentStatus = $"{InferenceAttachmentItems.Count} attachment(s) ready for the next message.";
+        NotifyInferenceAttachmentsChanged();
+    }
+
+    private bool CanClearInferenceAttachments() => IsNotBusy && InferenceAttachmentItems.Count > 0;
+
+    [RelayCommand(CanExecute = nameof(CanClearInferenceAttachments))]
+    private void ClearInferenceAttachments()
+    {
+        InferenceAttachmentItems.Clear();
+        SelectedInferenceAttachment = null;
+        InferenceAttachmentStatus = "No pending attachments. Sent excerpts remain in the current conversation.";
+        NotifyInferenceAttachmentsChanged();
+    }
+
+    private void NotifyInferenceAttachmentsChanged()
+    {
+        RunModelInferenceCommand.NotifyCanExecuteChanged();
+        RemoveInferenceAttachmentCommand.NotifyCanExecuteChanged();
+        ClearInferenceAttachmentsCommand.NotifyCanExecuteChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(IsNotBusy))]
+    private void NewModelConversation()
+    {
+        _modelInferenceConversation.Clear();
+        _modelInferenceTurns.Clear();
+        NotifyInferenceExportChanged();
+        InferenceExportStatus = "No completed response to export.";
+        ModelInferencePrompt = string.Empty;
+        ModelInferenceResponse = string.Empty;
+        ModelInferenceElapsed = string.Empty;
+        ClearInferenceAttachments();
+        ModelProviderStatus = "New conversation ready. Ask a question to begin.";
+    }
+
+    private bool CanExportInference() => IsNotBusy && _modelInferenceTurns.Count > 0;
+
+    private void NotifyInferenceExportChanged()
+    {
+        ExportInferencePdfCommand.NotifyCanExecuteChanged();
+        ExportInferenceWordCommand.NotifyCanExecuteChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanExportInference))]
+    private Task ExportInferencePdfAsync(CancellationToken cancellationToken) =>
+        ExportInferenceAsync(ReportFormat.Pdf, cancellationToken);
+
+    [RelayCommand(CanExecute = nameof(CanExportInference))]
+    private Task ExportInferenceWordAsync(CancellationToken cancellationToken) =>
+        ExportInferenceAsync(ReportFormat.Word, cancellationToken);
+
+    private async Task ExportInferenceAsync(ReportFormat format, CancellationToken cancellationToken)
+    {
+        var extension = format == ReportFormat.Pdf ? ".pdf" : ".docx";
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export inference results",
+            Filter = format == ReportFormat.Pdf ? "PDF (*.pdf)|*.pdf" : "Word document (*.docx)|*.docx",
+            FileName = $"tax-inference-{DateTime.Now:yyyyMMdd-HHmmss}{extension}",
+            DefaultExt = extension,
+            AddExtension = true,
+            OverwritePrompt = true
+        };
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+        IsBusy = true;
+        InferenceExportStatus = "Formatting inference results...";
+        try
+        {
+            var turns = ExportFullInferenceConversation
+                ? _modelInferenceTurns.ToArray()
+                : new[] { _modelInferenceTurns[^1] };
+            await inferenceReports.ExportAsync(turns, dialog.FileName, format, cancellationToken);
+            InferenceExportStatus = $"Exported {turns.Length} response(s) to {dialog.FileName}. Sources were not reverified.";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            InferenceExportStatus = "Inference export cancelled.";
+        }
+        catch (Exception exception)
+        {
+            InferenceExportStatus = $"Inference export failed: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(IsNotBusy))]
+    private async Task RefreshModelProvidersAsync(CancellationToken cancellationToken)
+    {
+        IsBusy = true;
+        try
+        {
+            var providers = await modelProviderResolver.GetAvailabilityAsync(cancellationToken);
+            Replace(ModelProviders, providers);
+            ModelProviderStatus = string.Join(
+                Environment.NewLine,
+                providers.Select(provider =>
+                    $"{provider.DisplayName} ({provider.ProviderId}): " +
+                    $"{(provider.IsAvailable ? "available" : "unavailable")} - {provider.Diagnostic}"));
+        }
+        catch (Exception exception)
+        {
+            ModelProviderStatus = $"Provider status check failed: {exception.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRunModelInference), IncludeCancelCommand = true)]
+    private async Task RunModelInferenceAsync(CancellationToken cancellationToken)
+    {
+        IsBusy = true;
+        IsInferenceRunning = true;
+        ModelInferenceElapsed = "Elapsed: 0s";
+        ModelProviderStatus = "Preparing inference request...";
+        var startedAt = Stopwatch.GetTimestamp();
+        var acceptingProgress = true;
+        using var elapsedCancellation = new CancellationTokenSource();
+        var elapsedProgress = new Progress<string>(elapsed =>
+        {
+            if (acceptingProgress)
+            {
+                ModelInferenceElapsed = elapsed;
+            }
+        });
+        var elapsedTask = UpdateInferenceElapsedAsync(
+            startedAt,
+            elapsedProgress,
+            elapsedCancellation.Token);
+        try
+        {
+            var stageProgress = new Progress<string>(stage =>
+            {
+                if (acceptingProgress)
+                {
+                    ModelProviderStatus = stage;
+                }
+            });
+            var messages = new List<ModelChatMessage>(_modelInferenceConversation);
+            if (!string.IsNullOrWhiteSpace(ModelInferencePrompt))
+            {
+                ModelProviderStatus = "Saving typed prompt locally...";
+                await promptHistory.SaveAsync(ModelInferencePrompt.Trim(), cancellationToken);
+                Replace(SavedPrompts, await promptHistory.GetAsync(cancellationToken));
+                PromptHistoryStatus = $"Prompt saved locally. {SavedPrompts.Count} saved prompt(s).";
+            }
+            var userMessage = InferenceAttachmentContext.Append(
+                string.IsNullOrWhiteSpace(ModelInferencePrompt)
+                    ? "Review the attached material, distinguish observations from facts, and ask what further analysis is needed."
+                    : ModelInferencePrompt.Trim(),
+                InferenceAttachmentItems);
+            messages.Add(new ModelChatMessage("user", userMessage));
+            var response = await modelInferenceService.InferAsync(
+                new ModelInferenceRequest(messages),
+                SelectedInferenceProvider,
+                cancellationToken,
+                stageProgress);
+            acceptingProgress = false;
+            _modelInferenceTurns.Add(new ModelInferenceTurn(userMessage, response));
+            NotifyInferenceExportChanged();
+            InferenceExportStatus = "Response ready to export as PDF or Word.";
+            _modelInferenceConversation.Add(new ModelChatMessage("user", userMessage));
+            _modelInferenceConversation.Add(new ModelChatMessage("assistant", response.Content));
+            ModelInferenceResponse = string.Join(
+                $"{Environment.NewLine}{Environment.NewLine}",
+                _modelInferenceConversation.Select(message =>
+                    $"{(message.Role == "user" ? "You" : "Assistant")}: {message.Content}"));
+            ModelInferencePrompt = string.Empty;
+            ClearInferenceAttachments();
+            InferenceAttachmentStatus = "Attachments were included in the conversation. Add files for your next message if needed.";
+            ModelProviderStatus =
+                $"{response.ProviderId} / {response.ModelId}; source data: {response.SourceDataMode}; " +
+                $"elapsed: {response.Elapsed.TotalSeconds:F1}s." +
+                (response.Warnings.Count == 0
+                    ? string.Empty
+                    : $"{Environment.NewLine}Warning: {string.Join(" ", response.Warnings)}");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            acceptingProgress = false;
+            ModelProviderStatus = "Request cancelled. Your message and earlier conversation have been retained.";
+        }
+        catch (Exception exception)
+        {
+            acceptingProgress = false;
+            ModelProviderStatus = $"Inference failed: {exception.Message}";
+        }
+        finally
+        {
+            acceptingProgress = false;
+            elapsedCancellation.Cancel();
+            await elapsedTask;
+            ModelInferenceElapsed = $"Elapsed: {Stopwatch.GetElapsedTime(startedAt).TotalSeconds:F0}s";
+            IsInferenceRunning = false;
+            IsBusy = false;
+        }
+    }
+
+    private static async Task UpdateInferenceElapsedAsync(
+        long startedAt,
+        IProgress<string> progress,
+        CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                progress.Report(
+                    $"Elapsed: {Stopwatch.GetElapsedTime(startedAt).TotalSeconds:F0}s");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     private bool TryApplyTrainingProgress(string message)

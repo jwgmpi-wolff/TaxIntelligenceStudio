@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
 
@@ -66,6 +68,20 @@ public sealed class LocalModelTrainingService(
                     accelerators,
                     request.AllowCpuFallback,
                     TrainingPlatform.CurrentArchitecture));
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ResumeCheckpoint) &&
+            ContainsTrainingArtifacts(request.OutputDirectory))
+        {
+            // Checkpoint rotation would delete a new run's checkpoints when they share a
+            // folder with older, higher-numbered checkpoints, so new runs get their own folder.
+            var runDirectory = Path.Combine(
+                request.OutputDirectory,
+                $"run-{timeProvider.GetLocalNow():yyyyMMdd-HHmmss}");
+            progress?.Report(
+                $"The output folder already contains training artifacts; " +
+                $"writing this new run to {runDirectory}");
+            request = request with { OutputDirectory = runDirectory };
         }
 
         Directory.CreateDirectory(request.OutputDirectory);
@@ -142,10 +158,16 @@ public sealed class LocalModelTrainingService(
         var logPath = Path.Combine(request.OutputDirectory, "training.log");
         var capturedLog = log.ToString();
         await File.WriteAllTextAsync(logPath, capturedLog, cancellationToken);
-        var success = process.ExitCode == 0;
+        var success = process.ExitCode == 0 &&
+                      HasValidAdapterArtifacts(request.OutputDirectory, request.BaseModel) &&
+                      HasCompleteTrainingRun(request.OutputDirectory);
         var summary = success
-            ? $"LoRA training completed. Full log: {logPath}"
-            : $"Trainer exited with code {process.ExitCode}. Full log: {logPath}";
+            ? $"LoRA training and held-out evaluation completed. Run manifests: " +
+              $"{Path.Combine(request.OutputDirectory, "evaluation.json")}; full log: {logPath}"
+            : process.ExitCode != 0
+                ? $"Trainer exited with code {process.ExitCode}. Full log: {logPath}"
+                : $"Trainer exited successfully but produced no valid adapter for the selected base model. " +
+                  $"Full log: {logPath}";
         var message = string.IsNullOrWhiteSpace(capturedLog)
             ? summary
             : $"{capturedLog.TrimEnd()}{Environment.NewLine}{summary}";
@@ -168,6 +190,131 @@ public sealed class LocalModelTrainingService(
             ? accelerators.FirstOrDefault(item =>
                 item.SupportsTraining && item.Kind == AcceleratorKind.Cpu)
             : null);
+
+    internal static bool HasValidAdapterArtifacts(string outputDirectory, string baseModel)
+    {
+        var adapterDirectory = Path.Combine(outputDirectory, "adapter");
+        var configPath = Path.Combine(adapterDirectory, "adapter_config.json");
+        var weightsPath = Path.Combine(adapterDirectory, "adapter_model.safetensors");
+        if (!File.Exists(configPath) ||
+            !File.Exists(weightsPath) ||
+            new FileInfo(weightsPath).Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var configuration = JsonDocument.Parse(File.ReadAllText(configPath));
+            return configuration.RootElement.TryGetProperty(
+                       "base_model_name_or_path",
+                       out var configuredModel) &&
+                   configuredModel.ValueKind == JsonValueKind.String &&
+                   string.Equals(
+                       configuredModel.GetString(),
+                       baseModel,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool HasCompleteTrainingRun(string outputDirectory)
+    {
+        var requiredFiles = new[]
+        {
+            "training_run.json",
+            "run_environment.json",
+            "evaluation.json",
+            "artifact_manifest.json"
+        };
+        if (!requiredFiles.All(file =>
+        {
+            var path = Path.Combine(outputDirectory, file);
+            return File.Exists(path) && new FileInfo(path).Length > 0;
+        }))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var run = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(outputDirectory, "training_run.json")));
+            using var environment = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(outputDirectory, "run_environment.json")));
+            using var evaluation = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(outputDirectory, "evaluation.json")));
+            using var manifest = JsonDocument.Parse(
+                File.ReadAllText(Path.Combine(outputDirectory, "artifact_manifest.json")));
+            var evalPath = Path.Combine(outputDirectory, "evaluation.json");
+            var manifestRoot = manifest.RootElement;
+            if (run.RootElement.ValueKind != JsonValueKind.Object ||
+                environment.RootElement.ValueKind != JsonValueKind.Object ||
+                evaluation.RootElement.ValueKind != JsonValueKind.Object ||
+                !evaluation.RootElement.TryGetProperty("status", out var evaluationStatus) ||
+                evaluationStatus.ValueKind != JsonValueKind.String ||
+                evaluationStatus.GetString() is not ("completed" or "not_run_no_held_out_data") ||
+                !manifestRoot.TryGetProperty("evaluation_sha256", out var expectedEvaluationHash) ||
+                expectedEvaluationHash.ValueKind != JsonValueKind.String ||
+                !string.Equals(
+                    expectedEvaluationHash.GetString(),
+                    ComputeSha256(evalPath),
+                    StringComparison.OrdinalIgnoreCase) ||
+                !manifestRoot.TryGetProperty("adapter_files", out var adapterFiles) ||
+                adapterFiles.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            var adapterDirectory = Path.GetFullPath(Path.Combine(outputDirectory, "adapter"));
+            var adapterPrefix = adapterDirectory + Path.DirectorySeparatorChar;
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in adapterFiles.EnumerateArray())
+            {
+                if (!entry.TryGetProperty("file", out var fileName) ||
+                    fileName.ValueKind != JsonValueKind.String ||
+                    !entry.TryGetProperty("bytes", out var expectedBytes) ||
+                    !expectedBytes.TryGetInt64(out var byteCount) ||
+                    !entry.TryGetProperty("sha256", out var expectedHash) ||
+                    expectedHash.ValueKind != JsonValueKind.String)
+                {
+                    return false;
+                }
+
+                var filePath = Path.GetFullPath(
+                    Path.Combine(adapterDirectory, fileName.GetString() ?? string.Empty));
+                if (!filePath.StartsWith(adapterPrefix, StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(filePath) ||
+                    new FileInfo(filePath).Length != byteCount ||
+                    !string.Equals(expectedHash.GetString(), ComputeSha256(filePath), StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                seenFiles.Add(Path.GetFileName(filePath));
+            }
+
+            return seenFiles.Contains("adapter_config.json") &&
+                   seenFiles.Contains("adapter_model.safetensors");
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    private static string ComputeSha256(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
 
     /// <summary>
     /// Explains why no training device could be selected, using the reasons
@@ -214,7 +361,7 @@ public sealed class LocalModelTrainingService(
         return message;
     }
 
-    private static ProcessStartInfo BuildStartInfo(
+    internal static ProcessStartInfo BuildStartInfo(
         ModelTrainingRequest request,
         string scriptPath,
         AcceleratorKind accelerator,
@@ -231,8 +378,33 @@ public sealed class LocalModelTrainingService(
         startInfo.ArgumentList.Add(scriptPath);
         startInfo.ArgumentList.Add("--model");
         startInfo.ArgumentList.Add(request.BaseModel);
-        startInfo.ArgumentList.Add("--dataset");
-        startInfo.ArgumentList.Add(request.DatasetPath);
+        foreach (var datasetPath in request.DatasetPaths.Select(Path.GetFullPath)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var splitDirectory = Path.Combine(
+                Path.GetDirectoryName(datasetPath)!,
+                $"{Path.GetFileNameWithoutExtension(datasetPath)}-splits");
+            var splitManifest = Path.Combine(splitDirectory, "manifest.json");
+            var trainingDataset = Path.Combine(splitDirectory, "train.jsonl");
+            var useSplits = File.Exists(splitManifest);
+            if (useSplits &&
+                (!File.Exists(trainingDataset) || new FileInfo(trainingDataset).Length == 0))
+            {
+                throw new InvalidOperationException(
+                    $"The validated training split for '{datasetPath}' is empty. " +
+                    "Do not train on the unfiltered full export; inspect the split manifest exclusions first.");
+            }
+
+            startInfo.ArgumentList.Add("--dataset");
+            startInfo.ArgumentList.Add(useSplits ? trainingDataset : datasetPath);
+            if (useSplits)
+            {
+                startInfo.ArgumentList.Add("--split-manifest");
+                startInfo.ArgumentList.Add(splitManifest);
+                AddDatasetArgument(startInfo, "--validation-dataset", splitDirectory, "validation.jsonl");
+                AddDatasetArgument(startInfo, "--test-dataset", splitDirectory, "test.jsonl");
+            }
+        }
         startInfo.ArgumentList.Add("--output");
         startInfo.ArgumentList.Add(request.OutputDirectory);
         startInfo.ArgumentList.Add("--device");
@@ -248,6 +420,20 @@ public sealed class LocalModelTrainingService(
         startInfo.ArgumentList.Add(request.BatchSize.ToString(System.Globalization.CultureInfo.InvariantCulture));
         startInfo.ArgumentList.Add("--learning-rate");
         startInfo.ArgumentList.Add(request.LearningRate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--seed");
+        startInfo.ArgumentList.Add(request.Seed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--lora-rank");
+        startInfo.ArgumentList.Add(request.LoraRank.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--lora-alpha");
+        startInfo.ArgumentList.Add(request.LoraAlpha.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add("--lora-dropout");
+        startInfo.ArgumentList.Add(request.LoraDropout.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (request.MaximumSequenceLength is not null)
+        {
+            startInfo.ArgumentList.Add("--max-sequence-length");
+            startInfo.ArgumentList.Add(
+                request.MaximumSequenceLength.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         if (!string.IsNullOrWhiteSpace(request.ResumeCheckpoint))
         {
             startInfo.ArgumentList.Add("--resume-checkpoint");
@@ -255,6 +441,20 @@ public sealed class LocalModelTrainingService(
         }
 
         return startInfo;
+    }
+
+    private static void AddDatasetArgument(
+        ProcessStartInfo startInfo,
+        string argumentName,
+        string directory,
+        string fileName)
+    {
+        var path = Path.Combine(directory, fileName);
+        if (File.Exists(path) && new FileInfo(path).Length > 0)
+        {
+            startInfo.ArgumentList.Add(argumentName);
+            startInfo.ArgumentList.Add(path);
+        }
     }
 
     private static int? ParseCheckpointStep(string path)
@@ -275,7 +475,8 @@ public sealed class LocalModelTrainingService(
         string configuredPython,
         AcceleratorKind accelerator,
         IProgress<string>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowRepair = true)
     {
         var candidates = new List<string>();
         if (!configuredPython.Equals("python", StringComparison.OrdinalIgnoreCase) &&
@@ -313,6 +514,14 @@ public sealed class LocalModelTrainingService(
             }
 
             failures.Add($"{candidate}: {probe.Message}");
+        }
+
+        if (!allowRepair)
+        {
+            throw new InvalidOperationException(
+                "No compatible installed Python runtime was found for trained inference. " +
+                "Configure ModelProviders:TrainedPythonExecutable with your training environment. " +
+                string.Join(Environment.NewLine, failures));
         }
 
         progress?.Report(
@@ -854,12 +1063,15 @@ public sealed class LocalModelTrainingService(
     private static void ValidateRequest(ModelTrainingRequest request)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.BaseModel);
-        ArgumentException.ThrowIfNullOrWhiteSpace(request.DatasetPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.OutputDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.PythonExecutable);
-        if (!File.Exists(request.DatasetPath))
+        foreach (var datasetPath in request.DatasetPaths)
         {
-            throw new FileNotFoundException("The training dataset was not found.", request.DatasetPath);
+            ArgumentException.ThrowIfNullOrWhiteSpace(datasetPath);
+            if (!File.Exists(datasetPath))
+            {
+                throw new FileNotFoundException("The training dataset was not found.", datasetPath);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(request.ResumeCheckpoint))
@@ -891,13 +1103,27 @@ public sealed class LocalModelTrainingService(
             }
         }
 
-        if (request.Epochs <= 0 || request.BatchSize <= 0 || request.LearningRate <= 0)
+        if (request.Epochs <= 0 ||
+            request.BatchSize <= 0 ||
+            request.LearningRate <= 0 ||
+            request.Seed < 0 ||
+            request.LoraRank <= 0 ||
+            request.LoraAlpha <= 0 ||
+            !double.IsFinite(request.LoraDropout) ||
+            request.LoraDropout is < 0 or >= 1 ||
+            request.MaximumSequenceLength is <= 0 or > 32_768)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(request),
-                "Epochs, batch size, and learning rate must be positive.");
+                "Training settings are outside their supported ranges.");
         }
     }
+
+    internal static bool ContainsTrainingArtifacts(string outputDirectory) =>
+        Directory.Exists(outputDirectory) &&
+        (File.Exists(Path.Combine(outputDirectory, "training_run.json")) ||
+         Directory.Exists(Path.Combine(outputDirectory, "adapter")) ||
+         Directory.EnumerateDirectories(outputDirectory, "checkpoint-*").Any());
 
     private static string ResolvePath(string path)
     {

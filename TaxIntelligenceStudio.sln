@@ -17,6 +17,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaxIntelligenceStudio.Deskt
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaxIntelligenceStudio.UnitTests", "tests\TaxIntelligenceStudio.UnitTests\TaxIntelligenceStudio.UnitTests.csproj", "{6334E4AD-5AAA-4FF5-B604-A1A87F615E6F}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TaxIntelligenceStudio.Desktop.Tests", "tests\TaxIntelligenceStudio.Desktop.Tests\TaxIntelligenceStudio.Desktop.Tests.csproj", "{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -99,6 +103,18 @@ Global
 		{6334E4AD-5AAA-4FF5-B604-A1A87F615E6F}.Release|x64.Build.0 = Release|Any CPU
 		{6334E4AD-5AAA-4FF5-B604-A1A87F615E6F}.Release|x86.ActiveCfg = Release|Any CPU
 		{6334E4AD-5AAA-4FF5-B604-A1A87F615E6F}.Release|x86.Build.0 = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|x64.Build.0 = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Debug|x86.Build.0 = Debug|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|x64.ActiveCfg = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|x64.Build.0 = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|x86.ActiveCfg = Release|Any CPU
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -110,5 +126,6 @@ Global
 		{4DFF7EC5-4845-4580-8E61-0BD089445572} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{4823E14B-B2F7-4930-A642-05A207184626} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{6334E4AD-5AAA-4FF5-B604-A1A87F615E6F} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{72E52481-C1AF-45C6-8607-8B5E5B1AE3BB} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

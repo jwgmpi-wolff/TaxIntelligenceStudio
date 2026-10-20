@@ -31,10 +31,36 @@ public interface IIrsKnowledgeIngestionService
 
 public interface IDatasetExportService
 {
-    Task<int> ExportJsonLinesAsync(
+    Task<DatasetExportResult> ExportJsonLinesAsync(
         string outputPath,
         CancellationToken cancellationToken = default);
+
+    Task<DatasetExportResult> ExportJsonLinesAsync(
+        string outputPath,
+        int datasetFileCount,
+        CancellationToken cancellationToken = default);
 }
+
+public sealed record DatasetExportResult(
+    int RecordCount,
+    IReadOnlyList<string> UploadFiles,
+    string? ManifestPath = null,
+    string? Sha256 = null,
+    DatasetTrainingSplitResult? TrainingSplits = null);
+
+public sealed record DatasetTrainingSplitResult(
+    string TrainingFile,
+    string ValidationFile,
+    string TestFile,
+    string ExampleMetadataFile,
+    string ManifestPath,
+    int TrainingRecordCount,
+    int ValidationRecordCount,
+    int TestRecordCount,
+    int DuplicateExcludedCount,
+    int PiiExcludedCount,
+    int UntrustedSourceExcludedCount,
+    int Seed);
 
 public interface IFinancialImportService
 {
@@ -67,6 +93,23 @@ public interface ITaxReportService
         string outputPath,
         ReportFormat format,
         CancellationToken cancellationToken = default);
+}
+
+public interface IInferenceReportService
+{
+    Task ExportAsync(
+        IReadOnlyList<ModelInferenceTurn> turns,
+        string outputPath,
+        ReportFormat format,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IInferencePromptHistory
+{
+    Task<IReadOnlyList<SavedInferencePrompt>> GetAsync(CancellationToken cancellationToken = default);
+    Task SaveAsync(string prompt, CancellationToken cancellationToken = default);
+    Task DeleteAsync(Guid id, CancellationToken cancellationToken = default);
+    Task ClearAsync(CancellationToken cancellationToken = default);
 }
 
 public interface IHardwareAccelerationService
@@ -113,10 +156,60 @@ public interface IAgentModelService
         string configuredPython,
         IProgress<string>? progress = null,
         CancellationToken cancellationToken = default);
+    Task<string> InferChatAsync(
+        ActiveAgentModel model,
+        ModelInferenceRequest request,
+        string configuredPython,
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null);
     Task<ActiveAgentModel> CreateOllamaModelAsync(
         AgentModelCandidate candidate,
         string modelName,
         string configuredPython,
         IProgress<string>? progress = null,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IModelInferenceProvider
+{
+    string Id { get; }
+    string DisplayName { get; }
+    bool IsCloud { get; }
+    string? ModelId { get; }
+
+    Task<ModelProviderAvailability> CheckAvailabilityAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<ModelInferenceResponse> InferAsync(
+        ModelInferenceRequest request,
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null);
+}
+
+public interface IModelProviderResolver
+{
+    Task<IReadOnlyCollection<ModelProviderAvailability>> GetAvailabilityAsync(
+        CancellationToken cancellationToken = default);
+
+    Task<IModelInferenceProvider> ResolveAsync(
+        string? providerId = null,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IModelInferenceService
+{
+    Task<ModelInferenceResponse> InferAsync(
+        ModelInferenceRequest request,
+        string? providerId = null,
+        CancellationToken cancellationToken = default,
+        IProgress<string>? progress = null);
+}
+
+public interface IKnowledgeContextSearchService
+{
+    Task<IReadOnlyList<RetrievedSourceContext>> SearchAsync(
+        string query,
+        int maximumDocuments,
+        int maximumCharacters,
         CancellationToken cancellationToken = default);
 }

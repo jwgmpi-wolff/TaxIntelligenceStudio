@@ -7,18 +7,20 @@ public sealed class ModelCatalogService : IModelCatalogService
 {
     private static readonly IReadOnlyCollection<BaseModelOption> Models =
     [
+        new("Qwen", "Qwen/Qwen2.5-1.5B-Instruct",
+            "Qwen 2.5 1.5B Instruct", 1.5m, false),
         new("Qwen", "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-            "Qwen 2.5 Coder 1.5B Instruct (recommended for laptop GPUs)", 1.5m, true),
+            "Qwen 2.5 Coder 1.5B Instruct", 1.5m, false),
         new("Qwen", "Qwen/Qwen2.5-Coder-3B-Instruct",
-            "Qwen 2.5 Coder 3B Instruct", 3m, true),
+            "Qwen 2.5 Coder 3B Instruct", 3m, false),
         new("Qwen", "Qwen/Qwen2.5-Coder-7B-Instruct",
-            "Qwen 2.5 Coder 7B Instruct (CUDA recommended)", 7m, false),
+            "Qwen 2.5 Coder 7B Instruct", 7m, false),
         new("Llama", "meta-llama/Llama-3.1-8B-Instruct",
             "Llama 3.1 8B Instruct (gated model)", 8m, false),
         new("Mistral", "mistralai/Mistral-7B-Instruct-v0.3",
             "Mistral 7B Instruct v0.3", 7m, false),
         new("Phi", "microsoft/Phi-3.5-mini-instruct",
-            "Phi 3.5 Mini Instruct", 3.8m, true)
+            "Phi 3.5 Mini Instruct", 3.8m, false)
     ];
 
     private static readonly IReadOnlyCollection<string> Families =

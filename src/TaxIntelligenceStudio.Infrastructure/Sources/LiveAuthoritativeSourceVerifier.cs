@@ -4,34 +4,30 @@ using System.Text;
 using System.Text.RegularExpressions;
 using TaxIntelligenceStudio.Application;
 using TaxIntelligenceStudio.Domain;
+using TaxIntelligenceStudio.Infrastructure.Inference;
 
 namespace TaxIntelligenceStudio.Infrastructure.Sources;
 
 public sealed class LiveAuthoritativeSourceVerifier(
     HttpClient httpClient,
-    TimeProvider timeProvider) : IAuthoritativeSourceVerifier
+    TimeProvider timeProvider,
+    ModelProviderOptions? modelProviderOptions = null) : IAuthoritativeSourceVerifier
 {
     private static readonly Regex TitlePattern = new(
         @"<title\b[^>]*>(?<title>.*?)</title>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant,
         TimeSpan.FromMilliseconds(100));
 
-    private static readonly string[] AllowedHosts =
-    [
-        "irs.gov",
-        "www.irs.gov",
-        "treasury.gov",
-        "www.treasury.gov",
-        "federalregister.gov",
-        "www.federalregister.gov"
-    ];
-
     public async Task<VerifiedSource> VerifyAsync(
         AuthoritativeSource source,
         CancellationToken cancellationToken = default)
     {
-        if (source.SourceUrl.Scheme != Uri.UriSchemeHttps ||
-            !AllowedHosts.Contains(source.SourceUrl.IdnHost, StringComparer.OrdinalIgnoreCase))
+        if (modelProviderOptions?.OfflineMode == true)
+        {
+            return Failed(source, "Live source verification is unavailable while offline mode is enabled.");
+        }
+
+        if (!AuthoritativeSourcePolicy.IsAllowedHttps(source.SourceUrl))
         {
             return Failed(source, "Only HTTPS IRS, Treasury, and Federal Register sources are authoritative.");
         }

@@ -1,6 +1,7 @@
 using System.Net;
 using TaxIntelligenceStudio.Domain;
 using TaxIntelligenceStudio.Infrastructure.Sources;
+using TaxIntelligenceStudio.Infrastructure.Inference;
 
 namespace TaxIntelligenceStudio.UnitTests;
 
@@ -38,6 +39,23 @@ public sealed class LiveAuthoritativeSourceVerifierTests
         var result = await verifier.VerifyAsync(CreateSource(url));
 
         Assert.False(result.IsVerified);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_DoesNotContactSourcesInOfflineMode()
+    {
+        var handler = new RecordingHandler();
+        var verifier = new LiveAuthoritativeSourceVerifier(
+            new HttpClient(handler),
+            TimeProvider.System,
+            new ModelProviderOptions { OfflineMode = true });
+
+        var result = await verifier.VerifyAsync(
+            CreateSource("https://www.irs.gov/publications/p17"));
+
+        Assert.False(result.IsVerified);
+        Assert.Contains("offline mode", result.FailureReason, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, handler.RequestCount);
     }
 
