@@ -361,6 +361,20 @@
                                  AcceptsReturn="True"
                                  IsReadOnly="True"
                                  VerticalScrollBarVisibility="Auto" />
+                        <Expander Header="Recent fine-tuning datasets" Margin="0,12,0,12">
+                            <StackPanel>
+                                <ui:Button HorizontalAlignment="Left" Content="Refresh dataset log"
+                                           Command="{Binding RefreshTrainingDatasetHistoryCommand}" />
+                                <ListBox Margin="0,6,0,6" Height="110"
+                                         ItemsSource="{Binding RecentTrainingDatasets}"
+                                         SelectedItem="{Binding SelectedTrainingDatasetLog}"
+                                         DisplayMemberPath="Summary" />
+                                <TextBox Height="150" IsReadOnly="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding SelectedTrainingDatasetLog.Details, Mode=OneWay}" />
+                                <TextBlock Text="{Binding TrainingDatasetHistoryStatus}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Expander>
                     </StackPanel>
                 </Grid>
                 </ScrollViewer>

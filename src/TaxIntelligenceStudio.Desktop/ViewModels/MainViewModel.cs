@@ -29,6 +29,7 @@ public partial class MainViewModel(
     IInferenceAttachmentService inferenceAttachments,
     IInferenceReportService inferenceReports,
     IInferencePromptHistory promptHistory,
+    ITrainingDatasetHistory trainingHistory,
     ModelProviderOptions modelProviderOptions) : ObservableObject
 {
     private TaxAnalysisResult? _analysis;
@@ -316,6 +317,46 @@ public partial class MainViewModel(
 
     public bool IsNotBusy => !IsBusy;
     public bool CanEditTraining => !IsTraining && (!IsBusy || IsInferenceRunning);
+    public ObservableCollection<TrainingDatasetLog> RecentTrainingDatasets { get; } = [];
+
+    [ObservableProperty]
+    private TrainingDatasetLog? _selectedTrainingDatasetLog;
+
+    [ObservableProperty]
+    private string _trainingDatasetHistoryStatus = "Recent dataset selections are stored locally, not dataset contents.";
+
+    [RelayCommand]
+    private async Task RefreshTrainingDatasetHistoryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            Replace(RecentTrainingDatasets, await trainingHistory.GetAsync(TrainingOutputDirectory, cancellationToken));
+            SelectedTrainingDatasetLog = RecentTrainingDatasets.FirstOrDefault();
+            TrainingDatasetHistoryStatus = $"{RecentTrainingDatasets.Count} training attempt(s) / existing manifest(s). " +
+                "Submitted entries are not proof that datasets were consumed; an interrupted app may leave the outcome unrecorded.";
+        }
+        catch (Exception exception)
+        {
+            TrainingDatasetHistoryStatus = $"Cannot read dataset history: {exception.Message}";
+        }
+    }
+
+    private async Task FinishTrainingDatasetLogAsync(Guid? id, string status, string? outputDirectory = null)
+    {
+        if (id is null)
+        {
+            return;
+        }
+        try
+        {
+            await trainingHistory.FinishAsync(id.Value, status, outputDirectory);
+            await RefreshTrainingDatasetHistoryAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            TrainingDatasetHistoryStatus = $"Training outcome was not saved to history: {exception.Message}";
+        }
+    }
     public ObservableCollection<FinancialTransaction> Transactions { get; } = [];
     public ObservableCollection<FinancialFileImport> FinancialFileImports { get; } = [];
     public ObservableCollection<TaxMapping> Mappings { get; } = [];
@@ -790,6 +831,7 @@ public partial class MainViewModel(
         private async Task TrainModelAsync(CancellationToken cancellationToken)
         {
             IsTraining = true;
+            Guid? datasetLogId = null;
             TrainingProgress = 0;
             TrainingProgressText = "Starting training preflight";
             try
@@ -802,8 +844,7 @@ public partial class MainViewModel(
                         : $"{TrainingStatus}{Environment.NewLine}{message}";
                     TryApplyTrainingProgress(message);
                 });
-                var result = await modelTrainingService.TrainAsync(
-                    new ModelTrainingRequest(
+                var trainingRequest = new ModelTrainingRequest(
                         BaseModel.Trim(),
                         TrainingDatasetPaths[0],
                         TrainingOutputDirectory,
@@ -813,9 +854,15 @@ public partial class MainViewModel(
                         LearningRate: 0.00005m,
                         AllowCpuFallback,
                         SelectedCheckpoint?.Path,
-                        AdditionalDatasetPaths: TrainingDatasetPaths.Skip(1).ToArray()),
+                        AdditionalDatasetPaths: TrainingDatasetPaths.Skip(1).ToArray());
+                datasetLogId = await trainingHistory.StartAsync(trainingRequest, cancellationToken);
+                await RefreshTrainingDatasetHistoryAsync(cancellationToken);
+                var result = await modelTrainingService.TrainAsync(
+                    trainingRequest,
                     progress,
                     cancellationToken);
+                await FinishTrainingDatasetLogAsync(datasetLogId,
+                    result.Succeeded ? "Completed" : "Failed", result.OutputDirectory);
                 TrainingStatus = result.Succeeded
                     ? $"{result.Log}{Environment.NewLine}Accelerator: {result.Accelerator}{Environment.NewLine}Output: {result.OutputDirectory}"
                     : $"{result.Log}{Environment.NewLine}Accelerator: {result.Accelerator}";
@@ -833,11 +880,13 @@ public partial class MainViewModel(
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
+                await FinishTrainingDatasetLogAsync(datasetLogId, "Cancelled");
                 TrainingStatus = "Training cancelled. Inference and earlier conversation were not cancelled.";
                 TrainingProgressText = "Training cancelled";
             }
             catch (Exception exception)
             {
+                await FinishTrainingDatasetLogAsync(datasetLogId, "Failed (preflight/training)");
                 TrainingStatus = $"Training did not start or failed: {exception.Message}";
                 TrainingProgressText = "Training failed";
             }

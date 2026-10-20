@@ -70,6 +70,9 @@ public sealed class ConcurrentJobsTests
         Assert.False(vm.IsInferenceRunning);
         Assert.True(vm.CanEditTraining);
         Assert.Contains("Test answer", vm.ModelInferenceResponse);
+        Assert.NotNull(fixture.LoggedTrainingRequest);
+        Assert.Equal("test.jsonl", Assert.Single(fixture.LoggedTrainingRequest.DatasetPaths));
+        Assert.Equal("Completed", fixture.LoggedOutcome);
     }
 
     [Theory]
@@ -90,6 +93,7 @@ public sealed class ConcurrentJobsTests
             fixture.CompleteInference();
             await inference;
             Assert.Contains("cancelled", vm.TrainingStatus);
+            Assert.Equal("Cancelled", fixture.LoggedOutcome);
         }
         else
         {
@@ -151,6 +155,7 @@ public sealed class ConcurrentJobsTests
             Assert.True(vm.IsInferenceRunning);
             Assert.True(vm.IsBusy);
             Assert.Contains("Test failure", vm.TrainingStatus);
+            Assert.Equal("Failed (preflight/training)", fixture.LoggedOutcome);
             fixture.CompleteInference();
             await inference;
         }
@@ -174,6 +179,8 @@ public sealed class ConcurrentJobsTests
 
         public MainViewModel ViewModel { get; }
         public ModelInferenceRequest? LastInferenceRequest { get; private set; }
+        public ModelTrainingRequest? LoggedTrainingRequest { get; private set; }
+        public string? LoggedOutcome { get; private set; }
 
         public Fixture()
         {
@@ -200,10 +207,26 @@ public sealed class ConcurrentJobsTests
                 nameof(IInferencePromptHistory.GetAsync) => Task.FromResult<IReadOnlyList<SavedInferencePrompt>>([]),
                 _ => throw new NotSupportedException(method.Name)
             });
+            var trainingHistory = Stub<ITrainingDatasetHistory>((method, args) =>
+            {
+                switch (method.Name)
+                {
+                    case nameof(ITrainingDatasetHistory.StartAsync):
+                        LoggedTrainingRequest = (ModelTrainingRequest)args![0]!;
+                        return Task.FromResult(Guid.NewGuid());
+                    case nameof(ITrainingDatasetHistory.FinishAsync):
+                        LoggedOutcome = (string)args![1]!;
+                        return Task.CompletedTask;
+                    case nameof(ITrainingDatasetHistory.GetAsync):
+                        return Task.FromResult<IReadOnlyList<TrainingDatasetLog>>([]);
+                    default:
+                        throw new NotSupportedException(method.Name);
+                }
+            });
             ViewModel = new MainViewModel(
                 null!, null!, null!, null!, null!, null!, trainer,
                 new ModelCatalogService(), null!, agent, inference, null!, null!, null!,
-                history, new ModelProviderOptions());
+                history, trainingHistory, new ModelProviderOptions());
             ViewModel.TrainingDatasetPaths.Add("test.jsonl");
             ViewModel.ModelInferencePrompt = "Test question";
         }

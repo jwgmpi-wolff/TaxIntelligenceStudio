@@ -128,6 +128,13 @@ public interface IModelTrainingService
         CancellationToken cancellationToken = default);
 }
 
+public interface ITrainingDatasetHistory
+{
+    Task<IReadOnlyList<TrainingDatasetLog>> GetAsync(string outputRoot, CancellationToken cancellationToken = default);
+    Task<Guid> StartAsync(ModelTrainingRequest request, CancellationToken cancellationToken = default);
+    Task FinishAsync(Guid id, string status, string? outputDirectory = null, CancellationToken cancellationToken = default);
+}
+
 public interface IModelCatalogService
 {
     IReadOnlyCollection<string> GetFamilies();

@@ -140,6 +140,9 @@ The solution follows a layered desktop architecture:
 - Concurrent training and inference in one desktop window, with independent
   cancellation and progress. Both share the machine's available CPU/GPU and
   memory; inference continues using the activated model until you change it.
+- Persistent recent fine-tuning dataset log with every queued path, model,
+  timestamps, output folder and recorded outcome, plus compatible earlier
+  run-manifest history. No dataset contents are copied into this log.
 - Live HTTPS verification restricted to `irs.gov`, `treasury.gov`, and
   `federalregister.gov`.
 - Explicit `no-store`, `no-cache`, and zero-age request and response policies.

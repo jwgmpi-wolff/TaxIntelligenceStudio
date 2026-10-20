@@ -129,6 +129,14 @@ within-file repeats, and detect training/validation/test record or source leakag
 Ordered dataset fingerprints must cover all inputs, preserve legacy single-file
 fingerprints, protect checkpoint resume and record input paths/hashes/counts.
 
+Show a persistent Recent fine-tuning datasets log in Model Trainer. Record
+submitted paths, model, time, outcome and actual output folder. Keep attempts
+distinct from confirmed successful training. Read compatible older run manifests
+without asserting success; report corrupt history explicitly. Keep the log
+viewable during concurrent jobs, use independent database contexts, and retain
+only path metadata, not dataset contents. An interrupted app may leave an
+outcome unrecorded; disclose this rather than claiming the job is still running.
+
 Use real Transformers/PEFT LoRA training. Prefer supported CUDA QLoRA, then
 validated DirectML LoRA, and CPU only with explicit consent. Report unusable
 Python interpreters/architectures and real accelerator failures. Do not simulate

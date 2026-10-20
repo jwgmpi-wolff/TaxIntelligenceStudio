@@ -9,9 +9,16 @@ public sealed class TaxIntelligenceDbContext(DbContextOptions<TaxIntelligenceDbC
     public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
     public DbSet<KnowledgeDocument> KnowledgeDocuments => Set<KnowledgeDocument>();
     public DbSet<SavedInferencePrompt> InferencePrompts => Set<SavedInferencePrompt>();
+    public DbSet<TrainingDatasetLog> TrainingDatasetLogs => Set<TrainingDatasetLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        var trainingLog = modelBuilder.Entity<TrainingDatasetLog>();
+        trainingLog.ToTable("TrainingDatasetLogs");
+        trainingLog.HasKey(item => item.Id);
+        trainingLog.Ignore(item => item.Summary);
+        trainingLog.Ignore(item => item.Details);
+
         var prompt = modelBuilder.Entity<SavedInferencePrompt>();
         prompt.ToTable("InferencePrompts");
         prompt.HasKey(item => item.Id);

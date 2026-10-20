@@ -1,5 +1,20 @@
 # Local Model Training
 
+## Recent fine-tuning datasets
+
+In **Model Trainer**, expand **Recent fine-tuning datasets** beneath the training
+status. Select an entry to see all queued dataset paths, the base model, submitted
+time, recorded outcome, completion time and output folder. The log is saved locally
+in the app's SQLite database and loaded again on startup. **Refresh dataset log**
+reads the latest entries and compatible `run_environment.json` files in the selected
+output folder and its immediate run subfolders. No dataset contents are copied.
+
+Submitted entries record intent, including preflight failures; they do not prove
+the files were consumed. If the app exits mid-run, the outcome may remain
+unrecorded. Existing manifests show **outcome not checked**, not assumed success.
+Older manifests without per-file dataset provenance cannot reconstruct the file
+list. The log remains viewable while training or inference is active.
+
 The Model Trainer tab uses the existing embedded Python PEFT/LoRA trainer. It
 accepts a local Hugging Face-compatible model folder or model ID, one or more
 JSONL datasets, an output directory, Python interpreter, epoch/batch/

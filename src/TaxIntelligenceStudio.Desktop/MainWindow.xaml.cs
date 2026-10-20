@@ -18,7 +18,11 @@ public partial class MainWindow : FluentWindow
     {
         InitializeComponent();
         DataContext = viewModel;
-        Loaded += async (_, _) => await viewModel.LoadPromptHistoryCommand.ExecuteAsync(null);
+        Loaded += async (_, _) =>
+        {
+            await viewModel.LoadPromptHistoryCommand.ExecuteAsync(null);
+            await viewModel.RefreshTrainingDatasetHistoryCommand.ExecuteAsync(null);
+        };
         FitToWorkArea();
         SizeChanged += MainWindow_OnSizeChanged;
         PreviewMouseWheel += MainWindow_OnPreviewMouseWheel;

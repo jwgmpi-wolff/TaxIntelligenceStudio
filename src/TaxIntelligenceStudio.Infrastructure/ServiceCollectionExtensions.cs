@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITaxReportService, TaxReportService>();
         services.AddScoped<IInferenceReportService, InferenceReportService>();
         services.AddScoped<IInferencePromptHistory, InferencePromptHistory>();
+        services.AddScoped<ITrainingDatasetHistory, TrainingDatasetHistory>();
         services.AddSingleton<IHardwareAccelerationService, WindowsHardwareAccelerationService>();
         services.AddSingleton<IAcceleratorSelfTestService, AcceleratorSelfTestService>();
         services.AddSingleton<IModelCatalogService, ModelCatalogService>();
@@ -103,6 +104,15 @@ public static class ServiceCollectionExtensions
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
         await dbContext.Database.ExecuteSqlRawAsync(
             """
+            CREATE TABLE IF NOT EXISTS "TrainingDatasetLogs" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TrainingDatasetLogs" PRIMARY KEY,
+                "StartedAt" TEXT NOT NULL,
+                "CompletedAt" TEXT NULL,
+                "BaseModel" TEXT NOT NULL,
+                "DatasetPaths" TEXT NOT NULL,
+                "OutputDirectory" TEXT NOT NULL,
+                "Status" TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS "InferencePrompts" (
                 "Id" TEXT NOT NULL CONSTRAINT "PK_InferencePrompts" PRIMARY KEY,
                 "SavedAt" TEXT NOT NULL,
