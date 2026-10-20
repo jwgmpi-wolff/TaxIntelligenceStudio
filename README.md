@@ -1,5 +1,17 @@
 # Tax Intelligence Studio
 
+## Recreate with VS Code GitHub Copilot
+
+Open this repository in VS Code and run
+`/recreate-tax-intelligence-studio` in Copilot Chat's agent mode, or use
+**Chat: Run Prompt...** and select
+[the recreation prompt](.github/prompts/recreate-tax-intelligence-studio.prompt.md).
+The prompt is also self-contained: copy it into an empty workspace's
+`.github/prompts` folder to rebuild the solution from its requirements.
+It covers the current workflows, theme, concurrent training/inference, tests
+and installer packaging. Private datasets, trained weights, credentials and
+local history must be supplied separately; they are not recreated by a prompt.
+
 ## One-click Windows install
 
 [![Download Tax Intelligence Studio](https://img.shields.io/badge/Download-Windows%20installer-0078D4?style=for-the-badge&logo=windows)](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip)

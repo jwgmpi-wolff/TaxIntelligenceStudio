@@ -99,8 +99,10 @@ jobs:
           New-Item -ItemType Directory -Path installer/scripts -Force | Out-Null
           Copy-Item Install.cmd, Install-Local.cmd, Uninstall.cmd installer
           Copy-Item scripts/Install.ps1 installer/scripts
+          Copy-Item .github/prompts/recreate-tax-intelligence-studio.prompt.md installer
           Compress-Archive -Path installer/* -DestinationPath artifacts/TaxIntelligenceStudio-Installer.zip
-          Get-ChildItem artifacts/*.zip | Sort-Object Name | ForEach-Object {
+          Copy-Item .github/prompts/recreate-tax-intelligence-studio.prompt.md artifacts
+          Get-ChildItem artifacts -File | Where-Object Name -ne SHA256SUMS.txt | Sort-Object Name | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
           } | Set-Content artifacts/SHA256SUMS.txt
@@ -115,3 +117,4 @@ jobs:
           files: |
             artifacts/*.zip
             artifacts/SHA256SUMS.txt
+            artifacts/*.prompt.md
