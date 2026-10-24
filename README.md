@@ -1,5 +1,16 @@
 # Tax Intelligence Studio
 
+<!-- project-downloads:start -->
+## APK and installer downloads
+
+No packaged APK or desktop installer is currently published for this repository. The source archive below is not an installer; use the project-specific setup and build instructions.
+
+- [Download the complete source ZIP](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip).
+- [Setup script: Install-Local.cmd](./Install-Local.cmd) (download and extract the complete source ZIP first).
+- [Setup script: Install.cmd](./Install.cmd) (download and extract the complete source ZIP first).
+- [Setup script: scripts/Install.ps1](./scripts/Install.ps1) (download and extract the complete source ZIP first).
+<!-- project-downloads:end -->
+
 ## Recreate with VS Code GitHub Copilot
 
 Open this repository in VS Code and run
@@ -897,3 +908,9 @@ The current application creates review workpapers; it does not calculate a
 guaranteed maximum refund or submit a return. Financial exports alone do not
 contain the taxpayer, dependent, basis, withholding, election, and eligibility
 data needed to make those claims safely.
+
+## Copyright
+
+Copyright (c) 2026 Jerry Wolff. See [COPYRIGHT](COPYRIGHT) for the scope of this
+notice. Existing licenses and third-party attribution remain unchanged; this
+notice does not grant additional permissions.
