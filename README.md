@@ -3,12 +3,34 @@
 <!-- project-downloads:start -->
 ## APK and installer downloads
 
-No packaged APK or desktop installer is currently published for this repository. The source archive below is not an installer; use the project-specific setup and build instructions.
+Every available project package is indexed below, including older versions. Prefer the newest stable version for your platform and architecture. Debug APKs and prereleases are labeled; archives are not necessarily standalone installers.
 
-- [Download the complete source ZIP](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip).
-- [Setup script: Install-Local.cmd](./Install-Local.cmd) (download and extract the complete source ZIP first).
-- [Setup script: Install.cmd](./Install.cmd) (download and extract the complete source ZIP first).
-- [Setup script: scripts/Install.ps1](./scripts/Install.ps1) (download and extract the complete source ZIP first).
+### Release downloads: all published versions
+
+| Version / source | Package | Download |
+| --- | --- | --- |
+| v0.2.2 | Installer archive | [TaxIntelligenceStudio-Installer.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.2/TaxIntelligenceStudio-Installer.zip) |
+| v0.2.2 | Distribution archive | [TaxIntelligenceStudio-win-arm64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.2/TaxIntelligenceStudio-win-arm64.zip) |
+| v0.2.2 | Distribution archive | [TaxIntelligenceStudio-win-x64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.2/TaxIntelligenceStudio-win-x64.zip) |
+| v0.2.1 | Installer archive | [TaxIntelligenceStudio-Installer.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.1/TaxIntelligenceStudio-Installer.zip) |
+| v0.2.1 | Distribution archive | [TaxIntelligenceStudio-win-arm64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.1/TaxIntelligenceStudio-win-arm64.zip) |
+| v0.2.1 | Distribution archive | [TaxIntelligenceStudio-win-x64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.1/TaxIntelligenceStudio-win-x64.zip) |
+| v0.2.0 | Installer archive | [TaxIntelligenceStudio-Installer.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.0/TaxIntelligenceStudio-Installer.zip) |
+| v0.2.0 | Distribution archive | [TaxIntelligenceStudio-win-arm64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.0/TaxIntelligenceStudio-win-arm64.zip) |
+| v0.2.0 | Distribution archive | [TaxIntelligenceStudio-win-x64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.2.0/TaxIntelligenceStudio-win-x64.zip) |
+| v0.1.0 | Distribution archive | [TaxIntelligenceStudio-win-arm64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.1.0/TaxIntelligenceStudio-win-arm64.zip) |
+| v0.1.0 | Distribution archive | [TaxIntelligenceStudio-win-x64.zip](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases/download/v0.1.0/TaxIntelligenceStudio-win-x64.zip) |
+
+### Setup scripts and source
+
+- [Setup script: Install-Local.cmd](./Install-Local.cmd)
+- [Setup script: Install.cmd](./Install.cmd)
+- [Setup script: scripts/Install.ps1](./scripts/Install.ps1)
+
+- [Download the complete source ZIP](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/archive/refs/heads/main.zip). Extract the complete checkout before running setup scripts unless the project instructions explicitly support standalone installation.
+- [Browse all releases and their assets](https://github.com/jwgmpi-wolff/TaxIntelligenceStudio/releases).
+
+Android may require approval to install apps from the download source. Follow the project-specific installation, signing, checksum, and prerequisite instructions elsewhere in this README.
 <!-- project-downloads:end -->
 
 ## Recreate with VS Code GitHub Copilot
